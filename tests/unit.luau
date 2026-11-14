@@ -89,6 +89,22 @@ test("upgradeSave is idempotent", function()
 	assertEq(twice.version, once.version, "second pass changed the version")
 end)
 
+test("v39 turns the lost-target hold off on saved radars only", function()
+	local saved = {
+		version = 38,
+		blocks = {
+			{ id = "radarsection", uuid = "a", location = roblox.CFrame.new(), config = {} },
+			{ id = "aesaradar", uuid = "b", location = roblox.CFrame.new() },
+			{ id = "block", uuid = "c", location = roblox.CFrame.new() },
+		},
+	}
+
+	local upgraded = BlocksSerializer.upgradeSave(saved, emptyBlockList)
+	assertEq(upgraded.blocks[1].config.holdLostTarget.config, false, "radarsection hold")
+	assertEq(upgraded.blocks[2].config.holdLostTarget.config, false, "aesaradar hold, no config before")
+	assertEq(upgraded.blocks[3].config, nil, "other block config")
+end)
+
 --- player config -------------------------------------------------------------------------------
 
 local PlayerConfigUpdater = rbxRequire("out/server/PlayerConfigVersioning").PlayerConfigUpdater
@@ -136,6 +152,294 @@ test("MathUtils.round honours the step", function()
 	local MathUtils = rbxRequire("out/engine/shared/fixes/MathUtils").MathUtils
 	assertEq(MathUtils.round(1.24, 0.5), 1, "1.24 to nearest 0.5")
 	assertEq(MathUtils.round(1.26, 0.5), 1.5, "1.26 to nearest 0.5")
+end)
+
+test("Strings.parseDuration reads unit forms, bare seconds, and rejects the rest", function()
+	local Strings = rbxRequire("out/engine/shared/fixes/String.propmacro").Strings
+	for input, expected in { ["30s"] = 30, ["1m"] = 60, ["1d"] = 86400, ["30d"] = 2592000, ["1w"] = 604800 } do
+		assertEq(Strings.parseDuration(input), expected, input)
+	end
+	assertEq(Strings.parseDuration("1w2d"), 777600, "1w2d")
+	assertEq(Strings.parseDuration(" 1D 12H "), 129600, "spaced, uppercase")
+	assertEq(Strings.parseDuration("3600"), 3600, "bare number is seconds")
+	for _, input in { "", "  ", "-1", "1.5h", "1y", "d", "1d x", "1dd", "s30" } do
+		assertEq(Strings.parseDuration(input), nil, `"{input}"`)
+	end
+end)
+
+test("Strings.commaSeparated groups integer digits in threes", function()
+	local Strings = rbxRequire("out/engine/shared/fixes/String.propmacro").Strings
+	for input, expected in {
+		[0] = "0", [7] = "7", [999] = "999", [1000] = "1,000", [113519] = "113,519",
+		[1234567] = "1,234,567", [-1234567] = "-1,234,567", [1234.5] = "1,234.5", [-999] = "-999",
+	} do
+		assertEq(Strings.commaSeparated(input), expected, tostring(input))
+	end
+	assertEq(Strings.commaSeparated(0 / 0), tostring(0 / 0), "nan passes through")
+	assertEq(Strings.commaSeparated(math.huge), "inf", "inf passes through")
+end)
+
+--- signals ----------------------------------------------------------------------------------------
+
+-- onkFirstInputs disconnects itself from the block's tick signal on its first call. When Fire stepped over the
+-- subscriber after it, every block handler registered after one missed its first tick.
+local ArgsSignal = rbxRequire("out/engine/shared/event/Signal").ArgsSignal
+
+local function fireLog(setup: (signal: any, log: { string }) -> ()): string
+	local signal = ArgsSignal.new()
+	local log = {}
+	setup(signal, log)
+	signal:Fire()
+	table.insert(log, "|")
+	signal:Fire()
+	return table.concat(log, " ")
+end
+
+test("Fire calls every subscriber in connection order", function()
+	local got = fireLog(function(signal, log)
+		for _, name in { "A", "B", "C" } do
+			signal:Connect(function() table.insert(log, name) end)
+		end
+	end)
+	assertEq(got, "A B C | A B C", "order")
+end)
+
+test("a subscriber disconnecting itself mid-Fire does not skip the next", function()
+	local got = fireLog(function(signal, log)
+		local a
+		a = signal:Connect(function()
+			table.insert(log, "A")
+			a:Disconnect()
+		end)
+		signal:Connect(function() table.insert(log, "B") end)
+		signal:Connect(function() table.insert(log, "C") end)
+	end)
+	assertEq(got, "A B C | B C", "calls")
+end)
+
+test("a subscriber disconnecting an earlier one mid-Fire does not skip or repeat", function()
+	local got = fireLog(function(signal, log)
+		local a = signal:Connect(function() table.insert(log, "A") end)
+		signal:Connect(function()
+			table.insert(log, "B")
+			a:Disconnect()
+		end)
+		signal:Connect(function() table.insert(log, "C") end)
+	end)
+	assertEq(got, "A B C | B C", "calls")
+end)
+
+test("a subscriber disconnecting a later one mid-Fire stops it being called", function()
+	local got = fireLog(function(signal, log)
+		local c
+		signal:Connect(function()
+			table.insert(log, "A")
+			if c then c:Disconnect() end
+		end)
+		signal:Connect(function() table.insert(log, "B") end)
+		c = signal:Connect(function() table.insert(log, "C") end)
+	end)
+	assertEq(got, "A B | A B", "calls")
+end)
+
+test("a function connected twice still runs twice when the first copy disconnects itself", function()
+	local got = fireLog(function(signal, log)
+		local first
+		local calls = 0
+		local function f()
+			calls += 1
+			table.insert(log, "F" .. calls)
+			if calls == 1 then first:Disconnect() end
+		end
+		first = signal:Connect(f)
+		signal:Connect(f)
+		signal:Connect(function() table.insert(log, "C") end)
+	end)
+	assertEq(got, "F1 F2 C | F3 C", "calls")
+end)
+
+test("a subscriber disconnecting an earlier one and itself mid-Fire does not skip the next", function()
+	local got = fireLog(function(signal, log)
+		local a = signal:Connect(function() table.insert(log, "A") end)
+		local b
+		b = signal:Connect(function()
+			table.insert(log, "B")
+			a:Disconnect()
+			b:Disconnect()
+		end)
+		signal:Connect(function() table.insert(log, "C") end)
+	end)
+	assertEq(got, "A B C | C", "calls")
+end)
+
+-- InputHandlerComponent disables and re-enables its parent on every inputType change, which disconnects its
+-- subscription and connects a fresh one from inside the Fire. When Fire also ran subscribers connected during
+-- it, each fresh one reconnected again and the client hung until the script timeout killed it.
+test("a subscriber that reconnects itself mid-Fire runs once per Fire", function()
+	local signal = ArgsSignal.new()
+	local calls = 0
+	local connection
+	local function handler()
+		calls += 1
+		if calls > 10 then error("still firing after 10 calls", 0) end
+		connection:Disconnect()
+		connection = signal:Connect(handler)
+	end
+	connection = signal:Connect(handler)
+
+	signal:Fire()
+	assertEq(calls, 1, "calls in the first Fire")
+	signal:Fire()
+	assertEq(calls, 2, "calls after the second Fire")
+end)
+
+test("a subscriber connected mid-Fire is first called by the next Fire", function()
+	local got = fireLog(function(signal, log)
+		local added = false
+		signal:Connect(function()
+			table.insert(log, "A")
+			if added then return end
+			added = true
+			signal:Connect(function() table.insert(log, "late") end)
+		end)
+		signal:Connect(function() table.insert(log, "B") end)
+	end)
+	assertEq(got, "A B | A B late", "calls")
+end)
+
+test("a disconnected subscriber is removed once the Fire that disconnected it finishes", function()
+	local signal = ArgsSignal.new()
+	local count = 0
+	local a
+	a = signal:Connect(function()
+		count += 1
+		a:Disconnect()
+	end)
+	signal:Fire()
+	signal:Fire()
+	assertEq(count, 1, "calls")
+	assertEq(#signal.subscribed, 0, "subscribers left")
+end)
+
+--- logic value storage ----------------------------------------------------------------------------
+
+-- A wired consumer re-filters only when the source's result object changes, so a set of the value already stored
+-- must keep that object, and anything that can differ underneath (a new value, NaN, a mutated table) must not.
+local LogicValueStorageContainer =
+	rbxRequire("out/shared/blockLogic/BlockLogicValueStorage").LogicValueStorageContainer
+local tickCtx = { tick = 1, dt = 0 }
+
+test("re-setting an equal value keeps the stored result", function()
+	local storage = LogicValueStorageContainer.new({ number = { config = 0 } })
+	storage:set("number", 5)
+	local first = storage:get(tickCtx)
+	storage:set("number", 5)
+	assertTrue(rawequal(storage:get(tickCtx), first), "same result after an equal set")
+	storage:set("number", 6)
+	assertTrue(not rawequal(storage:get(tickCtx), first), "new result after a different set")
+	assertEq(storage:get(tickCtx).value, 6, "value")
+end)
+
+test("NaN and tables are never skipped as equal", function()
+	local storage = LogicValueStorageContainer.new({ number = { config = 0 } })
+	local nan = 0 / 0
+	storage:set("number", nan)
+	local first = storage:get(tickCtx)
+	storage:set("number", nan)
+	assertTrue(not rawequal(storage:get(tickCtx), first), "NaN re-set invalidates")
+
+	local bytes = LogicValueStorageContainer.new({ bytearray = { config = {} } })
+	local buffer = { 1, 2 }
+	bytes:set("bytearray", buffer)
+	local before = bytes:get(tickCtx)
+	bytes:set("bytearray", buffer)
+	assertTrue(not rawequal(bytes:get(tickCtx), before), "same table re-set invalidates")
+end)
+
+--- logic loops ----------------------------------------------------------------------------------
+
+-- Fake blocks wired with the real wire storage; `ticks` marks a stateful definition (Counter, Memory...). A wire
+-- reading a register inside its own loop must read the start-of-tick value, and every other wire must not.
+local LogicLoops = rbxRequire("out/shared/blockLogic/LogicLoops").LogicLoops
+local BlockBackedInputLogicValueStorage =
+	rbxRequire("out/shared/blockLogic/BlockLogicValueStorage").BlockBackedInputLogicValueStorage
+
+local function loopGraph(spec: { { name: string, ticks: boolean, id: string? } }, wires: { { string } })
+	local blocks, entries = {}, {}
+	for i, s in spec do
+		blocks[s.name] = { input = {}, definition = { stateful = s.ticks } }
+		table.insert(entries, { uuid = string.format("%02d", i), id = s.id or "x", logic = blocks[s.name] })
+	end
+	local storages = {}
+	for i, w in wires do
+		local storage = BlockBackedInputLogicValueStorage.new({ types = {} }, blocks[w[1]], "result")
+		blocks[w[2]].input["in" .. i] = storage
+		storages[w[1] .. ">" .. w[2]] = storage
+	end
+	local registers = {}
+	for _, r in LogicLoops.cutLoops(entries) do
+		for name, b in blocks do
+			if b == r then table.insert(registers, name) end
+		end
+	end
+	table.sort(registers)
+	local delayed = {}
+	for key, storage in storages do
+		if storage.readsStartOfTick then table.insert(delayed, key) end
+	end
+	table.sort(delayed)
+	return table.concat(registers, ","), table.concat(delayed, ",")
+end
+
+test("wiring without loops gets no registers", function()
+	local registers, delayed = loopGraph(
+		{ { name = "S", ticks = true }, { name = "M", ticks = true }, { name = "A", ticks = false } },
+		{ { "S", "M" }, { "M", "A" } }
+	)
+	assertEq(registers, "", "registers")
+	assertEq(delayed, "", "delayed wires")
+end)
+
+test("two cross-wired memories both become registers", function()
+	local registers, delayed = loopGraph(
+		{ { name = "M1", ticks = true }, { name = "M2", ticks = true } },
+		{ { "M1", "M2" }, { "M2", "M1" } }
+	)
+	assertEq(registers, "M1,M2", "registers")
+	assertEq(delayed, "M1>M2,M2>M1", "delayed wires")
+end)
+
+test("a counter loop is cut at the counter only, and a reader outside the loop reads it fresh", function()
+	local registers, delayed = loopGraph(
+		{ { name = "C", ticks = true }, { name = "G", ticks = false }, { name = "Screen", ticks = true } },
+		{ { "C", "G" }, { "G", "C" }, { "C", "Screen" } }
+	)
+	assertEq(registers, "C", "registers")
+	assertEq(delayed, "C>G", "delayed wires")
+end)
+
+test("a gate loop with no stateful block is cut at its Fallback", function()
+	local registers, delayed = loopGraph(
+		{ { name = "N", ticks = false }, { name = "F", ticks = false, id = "fallback" } },
+		{ { "N", "F" }, { "F", "N" } }
+	)
+	assertEq(registers, "F", "registers")
+	assertEq(delayed, "F>N", "delayed wires")
+end)
+
+test("a gate wired to itself is its own register", function()
+	local registers, delayed = loopGraph({ { name = "N", ticks = false } }, { { "N", "N" } })
+	assertEq(registers, "N", "registers")
+	assertEq(delayed, "N>N", "delayed wires")
+end)
+
+test("a Delay in a Fallback loop is the only register", function()
+	local registers, delayed = loopGraph(
+		{ { name = "N", ticks = false }, { name = "D", ticks = true }, { name = "F", ticks = false, id = "fallback" } },
+		{ { "N", "D" }, { "D", "F" }, { "F", "N" } }
+	)
+	assertEq(registers, "D", "registers")
+	assertEq(delayed, "D>F", "delayed wires")
 end)
 
 --- luau semantics -------------------------------------------------------------------------------

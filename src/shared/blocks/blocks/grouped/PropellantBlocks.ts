@@ -9,6 +9,9 @@ import { PartUtils } from "shared/utils/PartUtils";
 import type { BlockLogicFullBothDefinitions, InstanceBlockLogicArgs } from "shared/blockLogic/BlockLogic";
 import type { BlockBuildersWithoutIdAndDefaults, BlockLogicInfo } from "shared/blocks/Block";
 
+// past a round trip plus the server's one-frame handoff; only a fire the server refused waits this long
+const pinTimeoutSec = 3;
+
 const definition = {
 	input: {
 		propel: {
@@ -71,9 +74,12 @@ type PropellantBlock = BlockModel & {
 	ColBox: BasePart & { WeldTop: WeldConstraint };
 };
 
+const forceClamp = definition.input.force.types.number.clamp;
 const replicateEventType = t.interface({
 	block: t.instance("Model").nominal("blockModel").as<PropellantBlock>(),
 	willDisintegrate: t.boolean,
+	force: t.numberWithBounds(forceClamp.min, forceClamp.max),
+	symmetric: t.boolean,
 });
 type ReplicateData = t.Infer<typeof replicateEventType>;
 
@@ -120,33 +126,51 @@ class Logic extends InstanceBlockLogic<typeof definition, PropellantBlock> {
 		const bottom = this.instance.Bottom;
 		const top = this.instance.Top;
 
-		const force = this.initializeInputCache("force");
-		const symmetric = this.initializeInputCache("symmetric");
-		const disintegrating = this.initializeInputCache("disintegrating");
-
 		const blockScale = BlockManager.manager.scale.get(this.instance) ?? Vector3.one;
 		const scale = blockScale.X * blockScale.Y * blockScale.Z;
 
-		this.on(({ propel }) => {
+		this.on(({ propel, force, symmetric, disintegrating }) => {
 			if (!propel) return;
+
+			// an anchored assembly is the server's, so a push from here would do nothing: the server pushes
+			// whatever half the break frees
+			const anchored = top.AssemblyRootPart?.Anchored === true;
 
 			// before the send, not after: sendOrBurn runs `replicate` locally and synchronously, and that is
 			// where WeldTop goes
-			PartUtils.pinAssemblyVelocity(top);
-			PartUtils.pinAssemblyVelocity(bottom);
+			if (!anchored) {
+				PartUtils.pinAssemblyVelocity(top);
+				PartUtils.pinAssemblyVelocity(bottom);
 
-			events.replicate.sendOrBurn({ block: this.instance, willDisintegrate: disintegrating.get() }, this);
+				// propel2c never arrives for a refused fire
+				task.delay(pinTimeoutSec, () => {
+					PartUtils.unpinAssemblyVelocity(top);
+					PartUtils.unpinAssemblyVelocity(bottom);
+				});
+			}
+
+			events.replicate.sendOrBurn(
+				{
+					block: this.instance,
+					willDisintegrate: disintegrating,
+					force,
+					symmetric,
+				},
+				this,
+			);
 			// breaking WeldTop splits the assembly, same as the disconnector
 			notifyAssemblySplit(this.instance);
 
 			// the impulse stays out of the synchronizer: only the owning client holds network ownership of
 			// these parts, so it is the only one whose push counts
-			const impulse = math.max(1, scale) * (force.tryGet() ?? 0);
-			if (!symmetric.get()) {
-				top.ApplyImpulse(top.CFrame.UpVector.mul(impulse));
-			} else {
-				top.ApplyImpulse(top.CFrame.UpVector.mul(impulse / 2));
-				bottom.ApplyImpulse(bottom.CFrame.UpVector.mul(impulse / 2));
+			if (!anchored) {
+				const impulse = math.max(1, scale) * force;
+				if (!symmetric) {
+					top.ApplyImpulse(top.CFrame.UpVector.mul(impulse));
+				} else {
+					top.ApplyImpulse(top.CFrame.UpVector.mul(impulse / 2));
+					bottom.ApplyImpulse(bottom.CFrame.UpVector.mul(impulse / 2));
+				}
 			}
 
 			this.disable();

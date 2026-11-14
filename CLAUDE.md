@@ -63,6 +63,9 @@ them for you.
 - **The hoist at the top of a `.propmacro.ts` is not dead code.** Removing, reordering, or writing above it breaks how the transformer emits the module.
 - **`t.any.as<T>()` validates nothing.** Neither does `.as<>()` on any other checker — it is a compile-time cast with no runtime effect.
 - **A check that reimplements production logic still passes** once the two drift. Load the real module instead; `tests/assetcheck.luau` is the pattern.
+- **A compile error anywhere stops `out/` updating everywhere.** The watcher reports it only in its terminal, so
+  every test and Studio sync silently runs old code. `wait-for-out.js` and `dev-errors.js` (the `verify` skill, which
+  reads `.dev.log`) show it; never run `rbxtsc` yourself.
 - **`WRITETOKEN` in `.env` is a live write path to production**, and a Studio session autosaves and snapshots on exit — it writes with nobody pressing Save.
 
 ## Writing code here
@@ -96,9 +99,10 @@ costs a silent bug, so err toward opening it.
 | [GUI_AND_INPUT.md](docs/claude/GUI_AND_INPUT.md) | **any GUI or input work at all** — keybinds, touch buttons, settings rows, block config controls, and what to leave alone unless the pattern is already established |
 | [BUILD_AND_TOOLING.md](docs/claude/BUILD_AND_TOOLING.md) | **before running or verifying anything**, and whenever a question about behaviour could be settled by executing it instead of reasoning about it. Checks, Studio tests, headless game code, the Rojo mapping |
 | [CODE_STYLE.md](docs/claude/CODE_STYLE.md) | **any code you write** — the per-construct conventions and the reasoning behind the rules above |
+| [STUDIO_MCP.md](docs/claude/STUDIO_MCP.md) | **anything run in a live Studio** — playtests, Server & Clients tests, `scripts/studio-mcp.js`, computer use, and what to check before pressing Play |
 
 Per-system notes also live in `docs/` — `GRAPHING_TOOL.md`, `BLOCK_1XN_DEPRECATION.md`, `MATERIALS.md`,
-`KEYBINDING.md`, `TERRAIN_OPTIMIZATION.md` and others. They are documentation only; nothing there is read by the
+`KEYBINDING.md`, `TERRAIN_OPTIMIZATION.md`, `BLOCK_LOGIC_PERFORMANCE.md` and others. They are documentation only; nothing there is read by the
 build. Read the relevant one before working on that system.
 
 ## Commands
@@ -108,6 +112,8 @@ npm install               # install dependencies
 npm run check             # assetcheck + updatelogs — headless, no Studio
 npm run checkassets       # asset integrity only (`-- -f` to list warnings in full)
 npm run checklogs         # update-log consistency only
+npm run checkplace        # place.rbxl matches out/ and holds no test hooks (publish runs it)
+powershell -File scripts/publishkey.ps1  # fetch PUBLISH_KEY into .env over ssh (interactive: sudo password)
 lune run assemble         # generate place.rbxl (required before opening Studio)
 npm run dev               # run all watchers: rbxtsc + rojo + asset watcher
 npm run build             # compile TypeScript once (rbxtsc)

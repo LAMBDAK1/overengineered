@@ -8,6 +8,7 @@ import type { PlayerDatabase } from "server/database/PlayerDatabase";
 import type { SlotDatabase } from "server/database/SlotDatabase";
 import type { PlayModeBase } from "server/modes/PlayModeBase";
 import type { MortalityController } from "server/MortalityController";
+import type { ServerBlockDamageController } from "server/ServerBlockDamageController";
 import type { ServerPlayersController } from "server/ServerPlayersController";
 import type { SpawnPosition } from "shared/SpawnPositions";
 
@@ -22,6 +23,7 @@ export class RideMode implements PlayModeBase {
 		@inject private readonly slots: SlotDatabase,
 		@inject private readonly playerData: PlayerDatabase,
 		@inject private readonly mortality: MortalityController,
+		@inject private readonly damage: ServerBlockDamageController,
 	) {
 		CustomRemotes.modes.ride.teleportOnSeat.invoked.Connect(this.sit.bind(this));
 	}
@@ -150,7 +152,8 @@ export class RideMode implements PlayModeBase {
 		}
 
 		this.initializePhysics(player, controller.blocks.getBlocks());
-		// Riding is where damage counts; until now the limbs were unregistered and nothing could hurt them.
+		this.damage.snapshotPvp(player.UserId); // before arm, which reads PvP for mortality
+		// riding is where damage counts, so the limbs are registered here
 		this.mortality.arm(player);
 
 		return { success: true };
@@ -170,6 +173,7 @@ export class RideMode implements PlayModeBase {
 
 		controller.blocks.deleteOperation.execute("all");
 		BlocksSerializer.deserializeFromObject(blocksToLoad, controller.blocks, this.blockList);
+		this.damage.releasePvp(player.UserId);
 
 		return { success: true };
 	}

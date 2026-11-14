@@ -16,6 +16,7 @@
       <bool name="ClipsDescendants">true</bool>
       <bool name="Enabled">true</bool>
       <token name="Face">1</token>
+      <token name="InputSinkEnabled">0</token>
       <float name="LightInfluence">1</float>
       <float name="MaxDistance">100</float>
       <float name="PixelsPerStud">80</float>
@@ -27,6 +28,8 @@
       <token name="SelectionBehaviorRight">0</token>
       <token name="SelectionBehaviorUp">0</token>
       <bool name="SelectionGroup">false</bool>
+      <BinaryString name="SerializedOverrides">
+      </BinaryString>
       <token name="SizingMode">1</token>
       <int64 name="SourceAssetId">-1</int64>
       <BinaryString name="Tags"></BinaryString>
@@ -97,6 +100,8 @@
         <bool name="SelectionGroup">false</bool>
         <Ref name="SelectionImageObject">null</Ref>
         <int name="SelectionOrder">0</int>
+        <BinaryString name="SerializedOverrides">
+        </BinaryString>
         <token name="Sink">0</token>
         <UDim2 name="Size">
           <XS>0.8</XS>

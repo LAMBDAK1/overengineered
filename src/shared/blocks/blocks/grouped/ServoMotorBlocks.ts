@@ -265,21 +265,30 @@ const events = {
 
 export type { Logic as ServoMotorLogic };
 class Logic extends InstanceBlockLogic<typeof servoDefinition, ServoMotorModel> {
-	private readonly rotationWeld;
-	private readonly hingeConstraint;
-
 	constructor(definition: typeof servoDefinition, block: InstanceBlockLogicArgs) {
 		super(definition, block);
 
 		const blockScale = BlockManager.manager.scale.get(this.instance) ?? Vector3.one;
 		const scale = blockScale.X * blockScale.Y * blockScale.Z;
 
-		this.hingeConstraint = this.instance.Base.HingeConstraint;
-		this.rotationWeld = this.instance.Base.Weld;
+		const hingeConstraint = this.instance.Base.HingeConstraint;
+		const rotationWeld = this.instance.Base.Weld;
 
-		const enableLimitsCache = this.initializeInputCache("enableLimits");
-		const lowerLimitCache = this.initializeInputCache("lowerAngleLimit");
-		const upperLimitCache = this.initializeInputCache("upperAngleLimit");
+		let enableLimits = false;
+		let lowerLimit = 0;
+		let upperLimit = 0;
+		this.onkFirstInputs(
+			["enableLimits", "lowerAngleLimit", "upperAngleLimit"],
+			({ enableLimits: enabled, lowerAngleLimit, upperAngleLimit }) => {
+				enableLimits = enabled;
+				lowerLimit = lowerAngleLimit;
+				upperLimit = upperAngleLimit;
+
+				hingeConstraint.LimitsEnabled = enabled;
+				hingeConstraint.LowerAngle = lowerAngleLimit;
+				hingeConstraint.UpperAngle = upperAngleLimit;
+			},
+		);
 
 		let infiniteTorque = false;
 
@@ -291,14 +300,14 @@ class Logic extends InstanceBlockLogic<typeof servoDefinition, ServoMotorModel> 
 			desc.CustomPhysicalProperties = newPhysProp;
 		});
 
-		this.onk(["cframe"], ({ cframe }) => {
+		this.onkFirstInputs(["cframe"], ({ cframe }) => {
 			infiniteTorque = cframe;
 
 			if (cframe) {
 				events.cframe_update.send({
 					angle: 0,
-					currentCFrame: this.rotationWeld.C0,
-					speed: this.hingeConstraint.AngularSpeed,
+					currentCFrame: rotationWeld.C0,
+					speed: hingeConstraint.AngularSpeed,
 					block: this.instance,
 				} as CFrameUpdateData);
 			}
@@ -324,68 +333,58 @@ class Logic extends InstanceBlockLogic<typeof servoDefinition, ServoMotorModel> 
 		});
 
 		this.onk(["clutch_release"], ({ clutch_release }) => {
-			if (this.rotationWeld.Enabled && clutch_release) {
+			if (rotationWeld.Enabled && clutch_release) {
 				this.disableAndBurn();
 			}
 
-			this.hingeConstraint.ActuatorType = Enum.ActuatorType[clutch_release ? "None" : "Servo"];
+			hingeConstraint.ActuatorType = Enum.ActuatorType[clutch_release ? "None" : "Servo"];
+		});
+
+		this.onk(["speed"], ({ speed }) => {
+			hingeConstraint.AngularSpeed = speed;
 		});
 
 		this.onk(["angle"], ({ angle }) => {
 			// fuck mak, and baker lied
 			angle = math.fmod(angle, 360);
 			if (math.abs(angle) > 180) angle -= math.sign(angle) * 360;
-			if (enableLimitsCache.get()) {
-				const lower = lowerLimitCache.get();
-				const upper = upperLimitCache.get();
-				if (lower > upper) {
-					// without the return this falls into math.clamp with min > max, which throws
+			if (enableLimits) {
+				if (lowerLimit > upperLimit) {
 					this.disableAndBurn();
 					return;
 				}
 
-				angle = math.clamp(angle, lower, upper);
+				angle = math.clamp(angle, lowerLimit, upperLimit);
 			}
 
-			if (this.rotationWeld.Enabled) {
+			if (rotationWeld.Enabled) {
 				events.cframe_update.send({
 					angle: angle,
-					currentCFrame: this.rotationWeld.C0,
-					speed: this.hingeConstraint.AngularSpeed,
+					currentCFrame: rotationWeld.C0,
+					speed: hingeConstraint.AngularSpeed,
 					block: this.instance,
 				} as CFrameUpdateData);
 			} else {
-				this.hingeConstraint.TargetAngle = angle;
+				hingeConstraint.TargetAngle = angle;
 			}
 		});
 
 		this.onTicc(() => {
-			if (!this.rotationWeld.Enabled) {
-				this.output.result.set("number", this.hingeConstraint.CurrentAngle);
+			if (!rotationWeld.Enabled) {
+				this.output.result.set("number", hingeConstraint.CurrentAngle);
 				return;
 			}
 
-			const [, yaw] = this.rotationWeld.C0.ToEulerAnglesYXZ();
+			const [, yaw] = rotationWeld.C0.ToEulerAnglesYXZ();
 			const angle = -math.deg(yaw);
-			this.output.result.set("number", this.rotationWeld.C1.Z !== 0 ? -angle : angle);
+			this.output.result.set("number", rotationWeld.C1.Z !== 0 ? -angle : angle);
 		});
-
-		this.onk(["speed"], ({ speed }) => {
-			this.hingeConstraint.AngularSpeed = speed;
-		});
-		this.onk(["stiffness"], ({ stiffness }) => {
-			this.hingeConstraint.AngularResponsiveness = stiffness;
+		this.onkFirstInputs(["stiffness"], ({ stiffness }) => {
+			hingeConstraint.AngularResponsiveness = stiffness;
 		}); // Unused when using CFrame weld
 		this.onk(["max_torque"], ({ max_torque }) => {
-			this.hingeConstraint.ServoMaxTorque = max_torque * 1_000_000 * math.max(1, scale);
+			hingeConstraint.ServoMaxTorque = max_torque * 1_000_000 * math.max(1, scale);
 		}); // Unused when using CFrame weld
-
-		this.onk(["enableLimits"], ({ enableLimits }) => (this.hingeConstraint.LimitsEnabled = enableLimits));
-
-		this.onk(["upperAngleLimit", "lowerAngleLimit"], ({ upperAngleLimit, lowerAngleLimit }) => {
-			this.hingeConstraint.LowerAngle = lowerAngleLimit;
-			this.hingeConstraint.UpperAngle = upperAngleLimit;
-		});
 	}
 }
 

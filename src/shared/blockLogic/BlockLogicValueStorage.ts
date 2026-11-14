@@ -115,6 +115,10 @@ export class LogicValueStorageContainer<TType extends PrimitiveKeys>
 	private lastChangeTick?: number;
 	private changedThisTick = false;
 	private wasChanged = false;
+	// What get() returns, built once per stored value: every reader only reads the fields, so handing out the
+	// same never-mutated table is indistinguishable from a fresh one, and an input read allocates nothing.
+	private resultChanged?: TypedLogicValue<TType>;
+	private resultUnchanged?: TypedLogicValue<TType>;
 
 	constructor(private readonly definitions: DefinitionTypes<TType>) {}
 
@@ -128,27 +132,41 @@ export class LogicValueStorageContainer<TType extends PrimitiveKeys>
 			this.lastChangeTick = ctx.tick;
 		}
 
-		return {
+		if (ctx.tick === this.lastChangeTick) {
+			return (this.resultChanged ??= {
+				value: this.value.value,
+				type: this.value.type,
+				changedSinceLastTick: true,
+			});
+		}
+
+		return (this.resultUnchanged ??= {
 			value: this.value.value,
 			type: this.value.type,
-			changedSinceLastTick: ctx.tick === this.lastChangeTick,
-		};
+			changedSinceLastTick: false,
+		});
 	}
 	unset(): void {
 		this.changedThisTick = true;
 		this.wasChanged = true;
 
 		this.value = undefined;
+		this.resultChanged = this.resultUnchanged = undefined;
 	}
 	set<TType2 extends TType>(valueType: TType2, value: Primitives[TType2]["default"]): void {
+		value = filterValue(value, this.definitions, valueType);
+
+		const stored = this.value;
+		if (stored && stored.type === valueType && stored.value === value && !typeIs(value, "table")) return;
+
 		this.changedThisTick = true;
 		this.wasChanged = true;
 
-		value = filterValue(value, this.definitions, valueType);
 		this.value = {
 			type: valueType,
 			value,
 		};
+		this.resultChanged = this.resultUnchanged = undefined;
 	}
 
 	/** Returns the currently stored value or throws if there's none yet. Use only inside BlockLogic. */
@@ -171,24 +189,38 @@ export class BlockBackedInputLogicValueStorage<
 > implements ReadonlyLogicValueStorage<TType> {
 	constructor(
 		private readonly inputDefinitions: BlockLogicFullInputDef,
-		private readonly outputBlock: BlockLogic<BlockLogicBothDefinitions>,
+		readonly outputBlock: BlockLogic<BlockLogicBothDefinitions>,
 		private readonly key: string,
 	) {}
 
+	private readsStartOfTick = false;
+	readStartOfTick(): void {
+		this.readsStartOfTick = true;
+	}
+
+	// The output storage hands out one never-mutated result per stored value, and filtering is a pure function of
+	// it, so the same result in means the same filtered result out.
+	private lastSource?: TypedLogicValue<PrimitiveKeys>;
+	private lastFiltered?: TypedLogicValue<TType>;
+
 	get(ctx: BlockLogicTickContext): TypedLogicValue<TType> | BlockLogicValueResults {
-		const result = this.outputBlock.getOutputValue(ctx, this.key);
+		const result = this.readsStartOfTick
+			? this.outputBlock.getOutputSnapshot(this.key)
+			: this.outputBlock.getOutputValue(ctx, this.key);
 		if (isCustomBlockLogicValueResult(result)) {
 			return result;
 		}
+		if (result === this.lastSource) return this.lastFiltered!;
 
-		let filtered = filterValueArr(result.value, this.outputBlock.definition.output[this.key].types, result.type);
-		filtered = filterValue(result.value, this.inputDefinitions.types, result.type);
-
-		return {
+		const filtered = {
 			type: result.type,
-			value: filtered,
+			value: filterValue(result.value, this.inputDefinitions.types, result.type),
 			changedSinceLastTick: result.changedSinceLastTick,
 		} as TypedLogicValue<TType>;
+		this.lastSource = result;
+		this.lastFiltered = filtered;
+
+		return filtered;
 	}
 }
 

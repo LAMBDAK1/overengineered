@@ -40,12 +40,12 @@ export class PlayerDataStorage {
 
 	static convertData(data: PlayerDataResponse): PD {
 		return {
-			purchasedSlots: data.purchasedSlots ?? 0,
 			settings: Config.addDefaults(data.settings ?? {}, PlayerConfigDefinition),
 			slots: data.slots ?? Objects.empty,
 			data: data.data ?? {},
 			blocks: data.blocks ?? {},
 			achievements: data.achievements ?? {},
+			storage: data.storage ?? 0,
 		};
 	}
 
@@ -82,9 +82,15 @@ export class PlayerDataStorage {
 			);
 
 		CustomRemotes.updateSaves.invoked.Connect((slots) => this._data.set({ ...this._data.get(), slots }));
+		CustomRemotes.updateBlockLimits.invoked.Connect((blocks) => this._data.set({ ...this._data.get(), blocks }));
 		CustomRemotes.achievements.update.invoked.Connect((data) => {
 			this._data.set({ ...this._data.get(), achievements: { ...this._data.get().achievements, ...data } });
 		});
+	}
+
+	/** Replaces everything with a row that failed to load at join and has since come back */
+	applyRecovered(data: PlayerDataResponse) {
+		this._data.set(PlayerDataStorage.convertData(data));
 	}
 
 	async sendPlayerConfig(config: PartialThrough<PlayerConfig>) {
@@ -109,7 +115,48 @@ export class PlayerDataStorage {
 		});
 	}
 
+	private readonly pendingLocks = new Map<number, { readonly locked: boolean; readonly before: boolean }>();
+	private lockFlush?: thread;
+	private setLocalLock(index: number, locked: boolean) {
+		const d = this.data.get();
+		if (d) {
+			this._data.set({ ...d, slots: SlotsMeta.withSlot(d.slots, index, { locked }) });
+		}
+	}
+	setSlotLocked(index: number, locked: boolean) {
+		const before =
+			this.pendingLocks.get(index)?.before ?? SlotsMeta.get(this.data.get()?.slots ?? [], index).locked === true;
+		this.setLocalLock(index, locked);
+
+		this.pendingLocks.set(index, { locked, before });
+		if (this.lockFlush) task.cancel(this.lockFlush);
+		this.lockFlush = task.delay(5, () => this.flushLocks());
+	}
+	flushLocks() {
+		if (this.lockFlush && coroutine.running() !== this.lockFlush) task.cancel(this.lockFlush);
+		this.lockFlush = undefined;
+		if (this.pendingLocks.isEmpty()) return;
+
+		const pending = [...this.pendingLocks];
+		this.pendingLocks.clear();
+		for (const [index, { locked, before }] of pending) {
+			if (locked === before) continue;
+
+			const response = this.slotRemotes.save.send({ index, save: false, locked });
+			if (response.success) continue;
+
+			$err(response.message);
+			const newer = this.pendingLocks.get(index);
+			if (newer) {
+				this.pendingLocks.set(index, { locked: newer.locked, before });
+			} else {
+				this.setLocalLock(index, before);
+			}
+		}
+	}
+
 	sendPlayerSlot(req: PlayerSaveSlotRequest) {
+		this.flushLocks();
 		$log("Setting slot " + req.index + " to " + HttpService.JSONEncode(req));
 		this.loadedSlot.set(req.index);
 
@@ -133,6 +180,7 @@ export class PlayerDataStorage {
 				...this.data.get()!,
 				slots: SlotsMeta.withSlot(d.slots, req.index, {
 					blocks: response.blocks ?? SlotsMeta.get(d.slots, req.index).blocks,
+					stored: response.stored ?? SlotsMeta.get(d.slots, req.index).stored,
 				}),
 			});
 		}
@@ -140,6 +188,7 @@ export class PlayerDataStorage {
 		return response;
 	}
 	deletePlayerSlot(req: PlayerDeleteSlotRequest) {
+		this.flushLocks();
 		$log("Deleting slot " + req.index);
 
 		const copy = { ...this.slots.get() };
@@ -162,7 +211,7 @@ export class PlayerDataStorage {
 		return LoadingController.run(message ?? `Loading slot ${index}`, () => {
 			const response = this.slotRemotes.load.send({ index });
 			if (response.success) {
-				// config no longer replicates on the block models — seed the owner's cache from the load reply
+				// config does not replicate on the block models — seed the owner's cache from the load reply
 				const plot = SharedPlots.instance.tryGetPlotByOwnerID(Players.LocalPlayer.UserId);
 				if (plot) BlockConfigStore.load(plot.instance.WaitForChild("Blocks"), response.configs ?? {});
 			}

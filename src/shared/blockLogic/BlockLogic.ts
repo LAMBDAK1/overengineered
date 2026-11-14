@@ -55,6 +55,9 @@ export type BlockLogicBothDefinitions = {
 
 	readonly input: BlockLogicInputDefs;
 	readonly output: BlockLogicOutputDefs;
+
+	/** Its output depends on earlier ticks (memory, counters, delays), so it is where a wire loop is cut (`LogicLoops`) */
+	readonly stateful?: boolean;
 };
 
 export type BlockLogicFullInputDef = {
@@ -76,6 +79,9 @@ export type BlockLogicFullBothDefinitions = {
 
 	readonly input: { readonly [k in string]: BlockLogicFullInputDef };
 	readonly output: { readonly [k in string]: BlockLogicFullOutputDef };
+
+	/** Its output depends on earlier ticks (memory, counters, delays), so it is where a wire loop is cut (`LogicLoops`) */
+	readonly stateful?: boolean;
 };
 
 //
@@ -145,6 +151,10 @@ type PrecomputedInputKeys = {
 	readonly types: readonly string[];
 	readonly changed: readonly string[];
 	readonly ticks: readonly string[];
+	/** One subscription's read of this tick, held until a change is found; a subscription never re-enters itself within a tick */
+	readonly scratchValues: unknown[];
+	readonly scratchTypes: unknown[];
+	readonly scratchChanged: boolean[];
 };
 const precomputeInputKeys = (keys: readonly (string | number | symbol)[]): PrecomputedInputKeys => {
 	const names: string[] = [];
@@ -160,7 +170,7 @@ const precomputeInputKeys = (keys: readonly (string | number | symbol)[]): Preco
 		ticks.push(`${name}Tick`);
 	}
 
-	return { keys: names, types, changed, ticks };
+	return { keys: names, types, changed, ticks, scratchValues: [], scratchTypes: [], scratchChanged: [] };
 };
 
 const inputValuesToFullObject = <TDef extends BlockLogicBothDefinitions, K extends keyof TDef["input"] & string>(
@@ -181,7 +191,9 @@ const inputValuesToFullObject = <TDef extends BlockLogicBothDefinitions, K exten
 		return {} as never;
 	}
 
-	const input: { [k in string | number | symbol]: unknown } = {};
+	const scratchValues = pkeys.scratchValues;
+	const scratchTypes = pkeys.scratchTypes;
+	const scratchChanged = pkeys.scratchChanged;
 	let anyChanged = false;
 
 	for (let i = 0; i < keyCount; i++) {
@@ -202,9 +214,9 @@ const inputValuesToFullObject = <TDef extends BlockLogicBothDefinitions, K exten
 		const changed = !equalToPrev || inputCachePrev[typeKey] !== value.type;
 		anyChanged ||= changed;
 
-		input[k] = value.value;
-		input[typeKey] = value.type;
-		input[pkeys.changed[i]] = changed;
+		scratchValues[i] = value.value;
+		scratchTypes[i] = value.type;
+		scratchChanged[i] = changed;
 
 		const tickKey = pkeys.ticks[i];
 		if (inputCacheNext[tickKey] !== ctx.tick) {
@@ -217,6 +229,14 @@ const inputValuesToFullObject = <TDef extends BlockLogicBothDefinitions, K exten
 	if (returnUndefinedIfUnchanged && !anyChanged) {
 		return undefined;
 	}
+
+	const input: { [k in string | number | symbol]: unknown } = {};
+	for (let i = 0; i < keyCount; i++) {
+		input[keys[i]] = scratchValues[i];
+		input[pkeys.types[i]] = scratchTypes[i];
+		input[pkeys.changed[i]] = scratchChanged[i];
+	}
+
 	return input as AllInputKeysToObject<TDef["input"], K>;
 };
 
@@ -284,12 +304,7 @@ export abstract class BlockLogic<TDef extends BlockLogicBothDefinitions> extends
 		let valueType: unknown;
 
 		// unwired inputs are backed by a constant storage holding the configured value; use it before the first tick populates the cache
-		const tryGetConfigured = (): Omit<TypedLogicValue<PrimitiveKeys>, "changedSinceLastTick"> | undefined => {
-			const storage = this._input[key];
-			if (!(storage instanceof LogicValueStorageContainer)) return undefined;
-
-			return (storage as LogicValueStorageContainer<PrimitiveKeys>).tryJustGet();
-		};
+		const tryGetConfigured = () => this.tryGetConfigured(key);
 
 		const typeKey = `${tostring(key)}Type` as never;
 		initFunc(
@@ -309,6 +324,30 @@ export abstract class BlockLogic<TDef extends BlockLogicBothDefinitions> extends
 			tryGet: () => (value ?? tryGetConfigured()?.value) as tvalue | undefined,
 			getType: () => (valueType ?? tryGetConfigured()?.type) as ttypes,
 			tryGetType: () => (valueType ?? tryGetConfigured()?.type) as ttypes | undefined,
+		};
+	}
+	private tryGetConfigured(
+		key: keyof TDef["input"],
+	): Omit<TypedLogicValue<PrimitiveKeys>, "changedSinceLastTick"> | undefined {
+		const storage = this._input[key];
+		if (!(storage instanceof LogicValueStorageContainer)) return undefined;
+
+		return (storage as LogicValueStorageContainer<PrimitiveKeys>).tryJustGet();
+	}
+	/**
+	 * {@link initializeInputCache} for a `connectorHidden` input, without its per-tick read. Such an input is never
+	 * wired (`WireTool` refuses it, `BlockConfig.addDefaults` gives it a concrete type, and the save check flags an input
+	 * that becomes hidden), so its storage holds the configured constant, which this reads directly.
+	 */
+	protected initializeConfigCache<K extends keyof TDef["input"]>(key: K) {
+		type ttypes = keyof TDef["input"][K]["types"] & PrimitiveKeys;
+		type tvalue = Primitives[ttypes]["default"];
+
+		return {
+			get: () => this.tryGetConfigured(key)?.value as tvalue,
+			tryGet: () => this.tryGetConfigured(key)?.value as tvalue | undefined,
+			getType: () => this.tryGetConfigured(key)?.type as ttypes,
+			tryGetType: () => this.tryGetConfigured(key)?.type as ttypes | undefined,
 		};
 	}
 	/** Initializes an object that stores and auto-updates a single input. **Might be processed before recalc, do not use in blocks where this.on\*Recalc\*() is used.** */
@@ -450,6 +489,35 @@ export abstract class BlockLogic<TDef extends BlockLogicBothDefinitions> extends
 
 	protected onTicc(func: (ctx: BlockLogicTickContext) => void): SignalConnection {
 		return this.ticked.Connect(func);
+	}
+
+	private readonly outputSnapshot: { [k in string]?: TypedLogicValue<PrimitiveKeys> | BlockLogicValueResults } = {};
+	private readonly snapshotSource: { [k in string]?: object } = {};
+	snapshotOutputs(): void {
+		if (this.isGarbage) {
+			for (const [key] of pairs(this._output)) {
+				this.outputSnapshot[key as string] = BlockLogicValueResults.garbage;
+				this.snapshotSource[key as string] = undefined;
+			}
+			return;
+		}
+
+		for (const [key, storage] of pairs(this._output)) {
+			const k = key as string;
+			const stored = storage.tryJustGet();
+			if (!stored) {
+				this.outputSnapshot[k] = BlockLogicValueResults.availableLater;
+				this.snapshotSource[k] = undefined;
+				continue;
+			}
+			if (this.snapshotSource[k] === stored) continue;
+
+			this.snapshotSource[k] = stored;
+			this.outputSnapshot[k] = { value: stored.value, type: stored.type, changedSinceLastTick: false };
+		}
+	}
+	getOutputSnapshot(key: string): TypedLogicValue<PrimitiveKeys> | BlockLogicValueResults {
+		return this.outputSnapshot[key] ?? BlockLogicValueResults.availableLater;
 	}
 	/** Runs the provided function when another block requests a value from this one, but no more than once per tick. */
 	private onRecalc(func: (ctx: BlockLogicTickContext) => void): SignalConnection {

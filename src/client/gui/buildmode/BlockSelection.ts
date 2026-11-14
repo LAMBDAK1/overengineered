@@ -16,13 +16,14 @@ import { Objects } from "engine/shared/fixes/Objects";
 import { Localization } from "engine/shared/Localization";
 import { PlayerRank } from "engine/shared/PlayerRank";
 import { BlockLimits } from "shared/blocks/BlockLimits";
-import { GameDefinitions } from "shared/data/GameDefinitions";
 import type { PopupController } from "client/gui/PopupController";
 import type { PlayerDataStorage } from "client/PlayerDataStorage";
 import type { Theme } from "client/Theme";
 import type { InstanceComponent } from "engine/shared/component/InstanceComponent";
 import type { BlockCategoryPath } from "shared/blocks/Block";
 import type { ReadonlyPlot } from "shared/building/ReadonlyPlot";
+
+const profiling = RunService.IsStudio();
 
 type Category = {
 	readonly path: BlockCategoryPath;
@@ -264,6 +265,9 @@ export class BlockSelectionControl extends Control<BlockSelectionControlDefiniti
 		);
 
 		this.event.subscribeObservable(this.highlightedBlocks, () => this.create(this.selectedCategory.get(), false));
+		this.event
+			.addObservable(playerData.data.fReadonlyCreateBased((d) => d.blocks))
+			.subscribe(() => this.create(this.selectedCategory.get(), false));
 
 		this.event.subscribe(this.gui.Content.SearchTextBox.Focused, () => {
 			if (!playerData.config.get().interface.searchBehaviour.resetOnSearch) return;
@@ -370,9 +374,11 @@ export class BlockSelectionControl extends Control<BlockSelectionControlDefiniti
 			this.list.add(control);
 
 			const upd = () => {
+				if (profiling) debug.profilebegin("BlockSelection count");
 				const family = BlockLimits.familyOf(block);
 				const count = BlockLimits.countPlaced(this.plot.getBlocks(), this.blockList, family);
 				gui.CountText.Text = tostring(`${count}/${limitOf(block)}`);
+				if (profiling) debug.profileend();
 			};
 			control.event.subscribe(this.plot.instance.ChildAdded, upd);
 			control.event.subscribe(this.plot.instance.ChildRemoved, upd);
@@ -435,8 +441,11 @@ export class BlockSelectionControl extends Control<BlockSelectionControlDefiniti
 		const processBlock = (block: Block) => {
 			if (!this.isVisible(block)) return;
 
+			const unavailable = !PlayerRank.isDev(Players.LocalPlayer) && limitOf(block) <= 0;
+			if (unavailable && block.secret) return;
+
 			let button: BlockControl;
-			if (GameDefinitions.isOfficialAwms && !PlayerRank.isDev(Players.LocalPlayer) && limitOf(block) <= 0) {
+			if (unavailable && block.featured) {
 				// 13+ check
 				if (
 					!(this.adsAllowed ??= PolicyService.GetPolicyInfoForPlayerAsync(Players.LocalPlayer).AreAdsAllowed)

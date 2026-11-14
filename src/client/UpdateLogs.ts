@@ -22,7 +22,127 @@ const logs: PreProcess[] = [
 	// 	- Added Plasma [breech, barrel, muzzles, upgrader]
 	// 	`,
 	// },
-
+	{
+		Header: "Pitch Perfect",
+		Date: "2026-11-13",
+		Content: `
+			- Block break sounds now match the block's size
+			- ^^^^ Small blocks sound quieter and higher, big blocks sound deeper
+			- Turning off a Public setting now stops other players' speakers, TTS, particles, tracers and lasers right away
+			- ^^^^ Yours also stop for everyone else once you close Settings
+			- Players who join later no longer see or hear effects from someone who turned their Public setting off
+			- Particle bursts now follow the Public particles setting
+			`,
+	},
+	{
+		Header: "Magnetic Personality",
+		Date: "2026-11-10",
+		Content: `
+			- Readded Attractor
+			- ^^^^ Runs about 45% faster than before it was removed
+			- ^^^^ A burned Attractor no longer keeps pulling
+			- Fixed Attractors and Magnets flinging blocks with a negative Distance multiplier or a block exactly on top of them
+			- Added a Lock button to saves
+			- ^^^^ A locked save can't be saved over or deleted until you unlock it
+			- Fixed Signal Edge Detector firing on starts, even though the input never changed
+			- Linear Easing moved to the Math category
+			- Key Sensors now catch quick taps and react a tick sooner
+			- Logic loops with Counters, Memory or Delays now behave the same every time you load the build
+			- Unchanged logic outputs don't waste computer resources now
+			- Optimized Wings, Magnet, Helium, Rocket Engine, Lamp, Hinge, TurnTable and Suspension
+			- Optimized Projectiles when many are in flight
+			- Screens and Buttons no longer re-filter text that has not changed
+			- Optimized Crash detection, weapon modules, terrain loading, Beacons and supersonic sound
+			`,
+	},
+	{
+		Header: "Lighten Up",
+		Date: "2026-11-09",
+		Content: `
+			- Mobile Ragdoll and Sprint buttons now hide when you hide the interface
+			- Servos are about 33% lighter performancewise
+			- Fixed Infinite torque Servos staying at 0° instead of turning to their set angle when you ride
+			- Fixed Infinite torque Sliders going to the end of their track instead of their set target
+			- Fixed Infinite torque Motors not starting with the configured speed
+			- Many blocks no longer re-read their settings every tick, so big builds run smoother
+			- ^^^^ Includes Memory Cells, Buttons, Cameras, Gyroscopes, Tracers, Textures, Sliders, TurnTables and more
+			- Controller Sensors are about 5x lighter, Mouse Sensors about 2.5x
+			- Placing several of the same sensor now shares the work between them
+			- ^^^^ Applies to Controller, Mouse, Ping, Joystick and Fire Sensors
+			- Fires are about 50% lighter on the server
+			- Blocks read their inputs in about half the time, so every logic-heavy build runs smoother
+			- The sky and atmosphere are about 70% lighter while you are not moving
+			- Fix the server slowly getting heavier when players leave mid mode switch
+			- Fix a small memory leak when welded blocks are deleted
+			`,
+	},
+	{
+		Header: "I Got Your Back",
+		Date: "2026-11-05",
+		Content: `
+			- Rebuilt the Back Mount from scratch
+			- Fix wearers freezing in place on other players' screens
+			- You now teleport to the mount when putting it on
+			- RootPart attachment option now works
+			- Fix being unable to wear a mount again after respawning or leaving Ride mode
+			- Mounts now detach properly when you die
+			- You get up from a seat when you put on a mount
+			- You can only wear one mount at a time, no matter who owns it
+			- You now have to stand next to a mount to put it on, including your own
+			- A shared mount now comes off when you despawn or leave the game
+		`,
+	},
+	{
+		Header: "Spread the Word",
+		Date: "2026-11-04",
+		Content: `
+			- Added Impact fire toggle in Physics settings
+			- ^^^^ Turn it off to stop crashes from heating up and setting your build on fire
+			- AESA Radar beams now spread up to a 256 stud radius
+			- ^^^^ Narrower up close, wider at longer range than before
+		`,
+	},
+	{
+		Header: "Know Your Limits",
+		Date: "2026-11-03",
+		Content: `
+			- Slots raised from 70 to 125
+			- Saves now have a storage limit: 3.5 MB per slot and 5 MB across all your slots
+			- ^^^^ Autosave and Last exit do not count toward the 5 MB
+			- ^^^^ Builds already over a limit still load, and can be resaved but only smaller
+			- Saves are now compressed, so the 5 MB limit holds a lot more
+			- ^^^^ The uncompressed 3.5 MB per-slot limit is unchanged
+			- You can now hover over a slot to see how much space it uses
+			- Lua Circuit now show in the block list with how to get them
+			- Block list updates right away when you are granted a block
+			- Fix respawning at the map spawn after dying in Ride mode
+			- Radars now have an optional 1 tick of persistance
+		`,
+	},
+	{
+		Header: "I Can Fix You",
+		Date: "2026-10-28",
+		Content: `
+			- Fix sprint speed and jump power resetting after respawn
+			- Fix build mode sometimes not coming back after respawn
+			- Fix sometimes spawning at the map spawn instead of your plot
+			- If your saves fail to load, the game keeps retrying and brings them back, no rejoin needed
+			- Propellant now launches cargo off anchored builds
+			- Extinguisher Bomb radius above 20 now actually works
+			- Blacklist and the hide-others' speakers/lasers/tracers/TTS/particles settings now also apply right after joining
+			- Fix Screen not updating for other players when it shows a sound with effects
+			- Gyroscope in Follow Cursor mode now aims past your own build and projectiles instead of spinning at them
+			- PvP can now only be set in Build mode
+			- Fire from other players no longer spreads to you or your build unless you both have PvP on
+			- Explosions from other players no longer push your build unless you both have PvP on
+			- ALL Projectiles now limited to 3000 studs/s
+			- Granted blocks (like the Lua Circuit) now apply right away, even while you are playing
+			- Fix terrain behind you not unloading when turning in place
+			- Fix terrain sometimes stopping loading altogether
+			- Fixed several exploits
+			- Controller R3 No longer changes input to desktop
+		`,
+	},
 	{
 		Header: "Tactile",
 		Date: "2026-09-23",

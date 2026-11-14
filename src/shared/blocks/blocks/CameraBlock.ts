@@ -158,7 +158,7 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 		});
 
 		const fovCache = this.initializeInputCache("fov");
-		const controllableCache = this.initializeInputCache("controllable");
+		const controllableCache = this.initializeConfigCache("controllable");
 
 		let cameraSub: SignalConnection | undefined = undefined;
 		this.onDisable(() => cameraSub?.Disconnect());
@@ -238,6 +238,7 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 export const CameraBlock = {
 	...BlockCreation.defaults,
 	id: "camera",
+	logicPriority: BlockCreation.priority.Output,
 	displayName: "Camera",
 	description: "Does camera things",
 

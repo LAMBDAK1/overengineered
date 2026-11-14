@@ -1,4 +1,4 @@
-import { RunService, TextChatService } from "@rbxts/services";
+import { Players, RunService, TextChatService } from "@rbxts/services";
 import {
 	C2S2CRemoteFunction,
 	C2SRemoteEvent,
@@ -6,6 +6,7 @@ import {
 	S2C2SRemoteFunction,
 	S2CRemoteEvent,
 } from "engine/shared/event/PERemoteEvent";
+import { ArgsSignal } from "engine/shared/event/Signal";
 import { Instances } from "engine/shared/fixes/Instances";
 import type { BlockDamage } from "engine/shared/BlockDamageController";
 import type { BaseAchievementStats } from "server/Achievement";
@@ -13,6 +14,7 @@ import type { MigrationResponse } from "server/database/ExternalDatabase";
 import type { PlayerBlockLimits } from "server/database/PlayerDatabase";
 import type { AchievementData } from "shared/AchievementData";
 import type { PlacedBlockConfig } from "shared/blockLogic/BlockConfig";
+import type { PublicEffectKey } from "shared/blocks/PublicEffects";
 import type { SpawnPosition } from "shared/SpawnPositions";
 
 declare global {
@@ -121,6 +123,7 @@ declare global {
 		readonly name?: string;
 		readonly color?: SerializedColor;
 		readonly touchControls?: TouchControlInfo;
+		readonly locked?: boolean;
 		readonly save: boolean;
 		readonly external?: boolean;
 	};
@@ -142,7 +145,6 @@ declare global {
 export interface PlayerInitResponse {
 	readonly remotes: Instance;
 	readonly data: {
-		readonly purchasedSlots: number | undefined;
 		readonly settings: Partial<PlayerConfig> | undefined;
 		readonly slots: readonly SlotMeta[] | undefined;
 		readonly data: OePlayerData | undefined;
@@ -176,24 +178,38 @@ export const CustomRemotes = {
 
 	admin: {
 		adminDataFor: new C2S2CRemoteFunction<number, Response<PlayerInitResponse>>("player_init_admin"),
-		adminToggleMimic: new C2SRemoteEvent<boolean>("adm_toggle_mimic"), // Toggle avatar mimic
-		adminUpdateMeta: new C2SRemoteEvent<{ plrID: number }>("adm_update_meta"), // Get and Set
-		adminMigrateRequest: new C2SRemoteEvent<{ from: number; to: number }>("adm_migration_request"), // Request Migration of playerdata
-		adminMigrateReply: new S2CRemoteEvent<MigrationResponse>("adm_migration_reply"), // Callback
-		adminWipeData: new C2SRemoteEvent<number>("adm_wipe_meta"), // Delete player metadata
-		adminKickPlayer: new C2SRemoteEvent<{
-			plrID: number;
-			displayReason: string;
-			privateReason: string;
-		}>("adm_kick_player"),
-		adminBanPlayer: new C2SRemoteEvent<{
-			plrID: number;
-			duration: number;
-			displayReason: string;
-			privateReason: string;
-		}>("adm_ban_player"),
-		adminAnnounce: new C2SRemoteEvent<{ payload: AnnouncementPayload; all: boolean }>("adm_announce"),
-		adminGrantBlock: new C2SRemoteEvent<{ plrID: number; blockId: string; limit?: number }>("adm_grant_block"),
+		adminToggleMimic: new C2S2CRemoteFunction<boolean, Response>("adm_toggle_mimic"), // Toggle avatar mimic
+		adminUpdateMeta: new C2S2CRemoteFunction<{ plrID: number }, Response>("adm_update_meta"), // Get and Set
+		adminMigrate: new C2S2CRemoteFunction<{ from: number; to: number }, Response<MigrationResponse>>(
+			"adm_migration_request",
+		),
+		adminWipeData: new C2S2CRemoteFunction<number, Response>("adm_wipe_meta"), // Delete player metadata
+		adminUnlockSlot: new C2S2CRemoteFunction<{ plrID: number; index: number }, Response>("adm_unlock_slot"),
+		adminKickPlayer: new C2S2CRemoteFunction<
+			{
+				plrID: number;
+				displayReason: string;
+				privateReason: string;
+			},
+			Response
+		>("adm_kick_player"),
+		adminBanPlayer: new C2S2CRemoteFunction<
+			{
+				plrID: number;
+				duration: number; // seconds, -1 permanent
+				displayReason: string;
+				privateReason: string;
+			},
+			Response
+		>("adm_ban_player"),
+		adminUnbanPlayer: new C2S2CRemoteFunction<{ plrID: number }, Response>("adm_unban_player"),
+		adminAnnounce: new C2S2CRemoteFunction<{ payload: AnnouncementPayload; all: boolean }, Response>(
+			"adm_announce",
+		),
+		adminGrantBlock: new C2S2CRemoteFunction<{ plrID: number; blockId: string; limit?: number }, Response>(
+			"adm_grant_block",
+		),
+		adminMessagePlayer: new C2S2CRemoteFunction<{ plrID: number; text: string }, Response>("adm_message_player"),
 		adminJoinServer: new C2S2CRemoteFunction<string, Response>("adm_join_server"),
 		adminServerList: new C2S2CRemoteFunction<
 			undefined,
@@ -204,8 +220,19 @@ export const CustomRemotes = {
 	chat: {
 		systemMessage: new S2CRemoteEvent<string>("chat_sysmsg", "RemoteEvent"),
 		announcePopup: new S2CRemoteEvent<{ readonly text: string }>("announce_popup", "RemoteEvent"),
+		privateMessage: new S2CRemoteEvent<{ readonly text: string }>("admin_pm", "RemoteEvent"),
 	},
+	/** Server → other clients: a player turned these public settings off, so stop what their blocks are playing */
+	publicEffectsDisabled: new S2CRemoteEvent<{ readonly userId: number; readonly keys: readonly PublicEffectKey[] }>(
+		"pl_public_off",
+		"RemoteEvent",
+	),
 	updateSaves: new S2CRemoteEvent<readonly SlotMeta[]>("pl_save_update", "RemoteEvent"),
+	updateBlockLimits: new S2CRemoteEvent<PlayerBlockLimits>("pl_blocks_update", "RemoteEvent"),
+	/** Server → client: a player row that failed to load came back and replaces the client's data */
+	playerDataRecovered: new S2CRemoteEvent<PlayerDataResponse>("pl_data_recovered", "RemoteEvent"),
+	/** Client → server: the recovered row is applied, so the player's writes may reopen */
+	playerDataRecoveredAck: new C2SRemoteEvent("pl_data_recovered_ack"),
 	donated: new S2CRemoteEvent<number>("pl_donated", "RemoteEvent"),
 	achievements: {
 		update: new S2CRemoteEvent<{ readonly [k in string]: AchievementData }>("pl_achs_updated", "RemoteEvent"),
@@ -269,8 +296,27 @@ export const CustomRemotes = {
 	integrityViolation: new C2SRemoteEvent<string>("integrity_violation"),
 } as const;
 
+const _playerLoadedOnce = new ArgsSignal<[player: Player]>();
+/** @server `playerLoaded` without repeats: every consumer resends or rebuilds that player's whole state */
+export const playerLoadedOnce = _playerLoadedOnce.asReadonly();
+
+const loaded = new Set<Player>();
+/** @server Whether the player's client has sent `playerLoaded`; before that its remote listeners may not exist yet */
+export const isPlayerLoaded = (player: Player): boolean => loaded.has(player);
+
 if (RunService.IsServer()) {
-	CustomRemotes.playerLoaded.invoked.Connect((player) => $log(`Received ${player.Name} loaded request`));
+	Players.PlayerRemoving.Connect((player) => loaded.delete(player));
+
+	CustomRemotes.playerLoaded.invoked.Connect((player) => {
+		if (loaded.has(player)) {
+			player.Kick("Network error at player_loaded");
+			return;
+		}
+		loaded.add(player);
+
+		$log(`Received ${player.Name} loaded request`);
+		_playerLoadedOnce.Fire(player);
+	});
 }
 if (RunService.IsClient()) {
 	CustomRemotes.chat.systemMessage.invoked.Connect((text) => {

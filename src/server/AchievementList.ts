@@ -657,7 +657,7 @@ class AchievementCatchOnFire extends Achievement {
 		});
 
 		this.event.subscribe(fireffect.event.s2c.sent, (_, args) => {
-			const owner = plots.plots.find((c) => args.part.IsDescendantOf(c.instance))?.ownerId?.get();
+			const owner = plots.tryGetPlotComponentByDescendant(args.part)?.ownerId?.get();
 			if (!owner) return;
 
 			this.set({ completed: owner === player.UserId });

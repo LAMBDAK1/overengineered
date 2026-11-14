@@ -4,6 +4,10 @@
       <string name="Name">PropellantBlock</string>
       <BinaryString name="AttributesSerialize"></BinaryString>
       <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+      <Content name="ExplorerIconContent">
+        <null>
+        </null>
+      </Content>
       <token name="LevelOfDetail">0</token>
       <CoordinateFrame name="ModelMeshCFrame">
         <X>0</X>
@@ -30,6 +34,8 @@
       <Ref name="PrimaryPart">1</Ref>
       <bool name="DefinesCapabilities">false</bool>
       <float name="ScaleFactor">1</float>
+      <BinaryString name="SerializedOverrides">
+      </BinaryString>
       <SharedString name="SlimHash">rxNJufX5oaagQE3qNtzJSQ==</SharedString>
       <int64 name="SourceAssetId">-1</int64>
       <BinaryString name="Tags"></BinaryString>
@@ -115,6 +121,8 @@
           <Z>0</Z>
         </Vector3>
         <bool name="DefinesCapabilities">false</bool>
+        <BinaryString name="SerializedOverrides">
+        </BinaryString>
         <token name="shape">1</token>
         <Vector3 name="size">
           <X>2</X>
@@ -164,21 +172,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">
@@ -222,21 +233,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">
@@ -280,21 +294,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">
@@ -330,6 +347,8 @@
           <Ref name="Part0Internal">1</Ref>
           <Ref name="Part1Internal">6</Ref>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <int name="State">3</int>
           <BinaryString name="Tags"></BinaryString>
@@ -365,21 +384,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">
@@ -415,6 +437,8 @@
           <Ref name="Part0Internal">1</Ref>
           <Ref name="Part1Internal">9</Ref>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <int name="State">3</int>
           <BinaryString name="Tags"></BinaryString>
@@ -426,12 +450,18 @@
         <string name="Name">WeldRegions</string>
         <BinaryString name="AttributesSerialize"></BinaryString>
         <SecurityCapabilities name="Capabilities">0</SecurityCapabilities>
+        <Content name="ExplorerIconContent">
+          <null>
+          </null>
+        </Content>
         <Color3 name="IconTint">
           <R>0</R>
           <G>0</G>
           <B>0</B>
         </Color3>
         <bool name="DefinesCapabilities">false</bool>
+        <BinaryString name="SerializedOverrides">
+        </BinaryString>
         <int64 name="SourceAssetId">-1</int64>
         <BinaryString name="Tags"></BinaryString>
       </Properties>
@@ -514,6 +544,8 @@
             <Z>0</Z>
           </Vector3>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <token name="shape">1</token>
           <Vector3 name="size">
             <X>1.9</X>
@@ -613,6 +645,8 @@
             <Z>0</Z>
           </Vector3>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <token name="shape">1</token>
           <Vector3 name="size">
             <X>1.9</X>
@@ -713,6 +747,8 @@
           <Z>0</Z>
         </Vector3>
         <bool name="DefinesCapabilities">false</bool>
+        <BinaryString name="SerializedOverrides">
+        </BinaryString>
         <token name="shape">1</token>
         <Vector3 name="size">
           <X>2</X>
@@ -762,21 +798,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">
@@ -870,6 +909,8 @@
           <Z>0</Z>
         </Vector3>
         <bool name="DefinesCapabilities">false</bool>
+        <BinaryString name="SerializedOverrides">
+        </BinaryString>
         <token name="shape">1</token>
         <Vector3 name="size">
           <X>2</X>
@@ -919,21 +960,24 @@
             <null>
             </null>
           </Content>
+          <token name="ResampleMode">0</token>
           <float name="Rotation">0</float>
           <Content name="RoughnessMapContent">
             <null>
             </null>
           </Content>
           <bool name="DefinesCapabilities">false</bool>
+          <BinaryString name="SerializedOverrides">
+          </BinaryString>
           <int64 name="SourceAssetId">-1</int64>
           <BinaryString name="Tags"></BinaryString>
           <Content name="TextureContent">
             <uri>rbxassetid://108681395204673</uri>
           </Content>
-          <ContentId name="TexturePack">
+          <Content name="TexturePackContent">
             <null>
             </null>
-          </ContentId>
+          </Content>
           <string name="TexturePackMetadata"></string>
           <float name="Transparency">0</float>
           <Vector2 name="UVOffset">

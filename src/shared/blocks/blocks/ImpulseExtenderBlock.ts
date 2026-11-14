@@ -4,6 +4,7 @@ import type { BlockLogicFullBothDefinitions, InstanceBlockLogicArgs } from "shar
 import type { BlockBuilder, BlockModelSource } from "shared/blocks/Block";
 
 const definition = {
+	stateful: true,
 	input: {
 		input: {
 			displayName: "Input",
@@ -51,12 +52,13 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 		let goalTime = time();
 		const len = this.initializeInputCache("length");
 		const state = this.initializeInputCache("input");
-		const tickBased = this.initializeInputCache("tickBased");
+		let tickBased = false;
+		this.onkFirstInputs(["tickBased"], ({ tickBased: value }) => (tickBased = value));
 
 		this.onTicc(() => {
 			if (state.tryGet()) {
 				lenLeft = math.max(1, len.tryGet() ?? 0);
-				if (!tickBased.get()) {
+				if (!tickBased) {
 					goalTime = time() + (len.tryGet() ?? 0);
 				}
 			}

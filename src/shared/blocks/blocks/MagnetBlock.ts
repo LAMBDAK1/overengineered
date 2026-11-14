@@ -2,6 +2,7 @@ import { RunService } from "@rbxts/services";
 import { InstanceBlockLogic } from "shared/blockLogic/BlockLogic";
 import { BlockCreation } from "shared/blocks/BlockCreation";
 import { BlockManager } from "shared/building/BlockManager";
+import { GameDefinitions } from "shared/data/GameDefinitions";
 import { PartUtils } from "shared/utils/PartUtils";
 import type { BlockLogicFullBothDefinitions } from "shared/blockLogic/BlockLogic";
 import type { InstanceBlockLogicArgs } from "shared/blockLogic/BlockLogic";
@@ -18,7 +19,7 @@ const definition = {
 					clamp: {
 						showAsSlider: true,
 						min: 0,
-						max: 100,
+						max: 300,
 					},
 				},
 			},
@@ -51,63 +52,60 @@ const definition = {
 	output: {},
 } satisfies BlockLogicFullBothDefinitions;
 
-const magicNumber = 60 * 1; // dt
 const magnets: Logic[] = [];
-const forcesApplied: Map<Logic, Vector3> = new Map<Logic, Vector3>();
-const assemblies: Map<Logic, BasePart | undefined> = new Map<Logic, BasePart | undefined>();
+const positions: Vector3[] = [];
+const strengths: number[] = [];
+const forcesApplied = new Map<Logic, Vector3>();
+const roots = new Map<Logic, BasePart | false>();
 
-const calculateForce = (block1: Logic, block2: Logic, distMult: number): Vector3 | undefined => {
-	const pos1 = block1.part.Position;
-	const pos2 = block2.part.Position;
-	const difference = pos1.sub(pos2);
-	const distance = difference.Magnitude / distMult;
-	if (distance > 10) return;
+// Getting AssemblyRootPart is slow and it's happening several times per magnet, so we cache it
+const rootOf = (magnet: Logic): BasePart | undefined => {
+	const cached = roots.get(magnet);
+	if (cached !== undefined) return cached || undefined;
 
-	const invSqrt = 1 / (1 + math.sqrt(distance));
-	const isAttracted = block1.polarity === block2.polarity;
-	const result = difference.Unit.mul(isAttracted ? invSqrt : -invSqrt);
-
-	//distance between
-	//inverse square root
-	//make it minus value if
-	//multiply by normalized value?
-	//???
-	//profit!!
-
-	return result;
+	const root = magnet.part.AssemblyRootPart;
+	roots.set(magnet, root ?? false);
+	return root;
 };
 
-RunService.PostSimulation.Connect((dt) => {
-	if (magnets.size() === 0) return;
-
+const stepAll = (dt: number) => {
 	forcesApplied.clear();
-
-	// Getting AssemblyRootPart is slow and it's happening several times per magnet, so we cache it
-	assemblies.clear();
+	roots.clear();
+	positions.clear();
+	strengths.clear();
 	for (const m of magnets) {
-		assemblies.set(m, m.part.AssemblyRootPart);
+		positions.push(m.part.Position);
+		strengths.push(m.getStrength() * GameDefinitions.REFERENCE_FPS * dt);
 	}
 
 	for (let i = 0; i < magnets.size(); i++) {
 		const magneti = magnets[i];
-		const strength1 = magneti.getStrength() * magicNumber * dt;
+		const strength1 = strengths[i];
 		if (strength1 === 0) continue;
 
 		for (let j = i + 1; j < magnets.size(); j++) {
-			const magnetj = magnets[j];
-			if (assemblies.get(magneti) === assemblies.get(magnetj)) {
-				continue;
-			}
-
-			const calculatedForce = calculateForce(
-				magneti,
-				magnetj,
-				magneti.distanceMultiplier * magnetj.distanceMultiplier,
-			);
-			if (!calculatedForce) continue;
-
-			const strength2 = magnetj.getStrength() * magicNumber * dt;
+			const strength2 = strengths[j];
 			if (strength2 === 0) continue;
+
+			const magnetj = magnets[j];
+			const difference = positions[i].sub(positions[j]);
+			const magnitude = difference.Magnitude;
+			if (magnitude === 0) continue;
+
+			const distance = magnitude / (magneti.distanceMultiplier * magnetj.distanceMultiplier);
+			if (!(distance >= 0 && distance <= 10)) continue;
+			if (rootOf(magneti) === rootOf(magnetj)) continue;
+
+			const invSqrt = 1 / (1 + math.sqrt(distance));
+			const isAttracted = magneti.polarity === magnetj.polarity;
+			const calculatedForce = difference.Unit.mul(isAttracted ? invSqrt : -invSqrt);
+
+			//distance between
+			//inverse square root
+			//make it minus value if
+			//multiply by normalized value?
+			//???
+			//profit!!
 
 			const appliedForce = calculatedForce.mul(strength1).add(calculatedForce.mul(strength2));
 			forcesApplied.set(magneti, (forcesApplied.get(magneti) ?? Vector3.zero).add(appliedForce));
@@ -116,10 +114,11 @@ RunService.PostSimulation.Connect((dt) => {
 
 		const finalForce = forcesApplied.get(magneti);
 		if (finalForce) {
-			magneti.part.ApplyImpulseAtPosition(finalForce, magneti.part.Position);
+			magneti.part.ApplyImpulseAtPosition(finalForce, positions[i]);
 		}
 	}
-});
+};
+let stepConnection: RBXScriptConnection | undefined;
 
 const partColor1 = Color3.fromRGB(128, 128, 240);
 const partColor2 = Color3.fromRGB(240, 128, 128);
@@ -151,18 +150,23 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 			);
 		});
 
-		// Registration and the two caches keyed off it share one lifetime. The tick only clears the caches
+		// Registration and the caches keyed off it share one lifetime. The tick only clears the caches
 		// when at least one magnet is live, so a magnet that leaves has to take its own entries with it.
 		this.onEnable(() => {
 			if (magnets.contains(this)) return;
 			magnets.push(this);
+			stepConnection ??= RunService.PostSimulation.Connect(stepAll);
 		});
 		this.onDisable(() => {
 			const index = magnets.indexOf(this);
 			if (index !== -1) magnets.remove(index);
 
 			forcesApplied.delete(this);
-			assemblies.delete(this);
+			roots.delete(this);
+			if (!magnets.isEmpty()) return;
+
+			stepConnection?.Disconnect();
+			stepConnection = undefined;
 		});
 	}
 

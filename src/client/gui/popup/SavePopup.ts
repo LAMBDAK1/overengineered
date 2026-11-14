@@ -13,6 +13,7 @@ import { Transforms } from "engine/shared/component/Transforms";
 import { Observables } from "engine/shared/event/Observables";
 import { ObservableValue } from "engine/shared/event/ObservableValue";
 import { Strings } from "engine/shared/fixes/String.propmacro";
+import { PlayerRank } from "engine/shared/PlayerRank";
 import { Colors } from "shared/Colors";
 import { GameDefinitions } from "shared/data/GameDefinitions";
 import { Serializer } from "shared/Serializer";
@@ -62,6 +63,7 @@ interface SlotMetaLike {
 	readonly name: string;
 	readonly color: SerializedColor;
 	readonly blocks: number;
+	readonly locked?: boolean;
 }
 
 interface CurrentItem {
@@ -71,13 +73,14 @@ interface CurrentItem {
 	readonly load: Action;
 	readonly delete: Action;
 	readonly openHistory: Action;
+	readonly toggleLock: Action;
 
 	readonly setColor: Action<[color: Color3]>;
 	readonly setName: Action<[name: string]>;
 }
 
 const findFreeSlot = (slots: { readonly [x: number]: SlotMeta }, p: Player) => {
-	for (let i = 0; i < GameDefinitions.getMaxSlots(p, 0); i++) {
+	for (let i = 0; i < GameDefinitions.getMaxSlots(p); i++) {
 		if (!(i in slots)) {
 			return i;
 		}
@@ -90,6 +93,10 @@ const isWritable = (meta: SlotMetaLike) => {
 
 	return true;
 };
+
+const isLocalAdmin = PlayerRank.isDev(Players.LocalPlayer) || PlayerRank.isMod(Players.LocalPlayer);
+const isSavable = (meta: SlotMetaLike) =>
+	isWritable(meta) || (isLocalAdmin && SlotsMeta.isAdminOverwritable(meta.index));
 
 type SaveItemParts = {
 	readonly IconImage: ImageLabel;
@@ -104,6 +111,7 @@ class SaveItem extends PartialControl<SaveItemParts, SaveItemDefinition> impleme
 	readonly load: Action;
 	readonly delete: Action;
 	readonly openHistory: Action;
+	readonly toggleLock: Action;
 	readonly setColor: Action<[color: Color3]>;
 	readonly setName: Action<[name: string]>;
 	readonly meta: ObservableValue<SlotMeta>;
@@ -117,12 +125,16 @@ class SaveItem extends PartialControl<SaveItemParts, SaveItemDefinition> impleme
 		this.meta = meta;
 
 		this.save = this.parent(new Action()) //
+			.subCanExecuteFrom({
+				can: this.event.addObservable(meta.fReadonlyCreateBased((c) => isSavable(c) && !c.locked)),
+			});
+		this.toggleLock = this.parent(new Action()) //
 			.subCanExecuteFrom({ can: this.event.addObservable(meta.fReadonlyCreateBased(isWritable)) });
 		this.load = this.parent(new Action());
 		this.delete = this.parent(new Action()) //
 			.subCanExecuteFrom({
 				can: this.event.addObservable(
-					meta.fReadonlyCreateBased((c) => isWritable(c) || SlotsMeta.isTestSlot(c.index)),
+					meta.fReadonlyCreateBased((c) => (isSavable(c) || SlotsMeta.isTestSlot(c.index)) && !c.locked),
 				),
 			});
 		this.openHistory = this.parent(new Action()) //
@@ -215,6 +227,10 @@ class SaveItem extends PartialControl<SaveItemParts, SaveItemDefinition> impleme
 						name,
 					});
 				});
+				this.toggleLock.subscribe(() => {
+					const slot = meta.get();
+					playerData.setSlotLocked(slot.index, !slot.locked);
+				});
 
 				this.delete.subscribe(() => {
 					const del = () => {
@@ -277,6 +293,9 @@ class SaveItem extends PartialControl<SaveItemParts, SaveItemDefinition> impleme
 				this.parts.Title.Text = meta.name;
 				this.parts.Title.Text = meta.name;
 				this.parts.IconImage.ImageColor3 = Serializer.Color3Serializer.deserialize(meta.color);
+				this.setTooltipText(
+					meta.stored === undefined ? "unknown" : `${Strings.commaSeparated(meta.stored)} bytes`,
+				);
 			},
 			true,
 		);
@@ -302,6 +321,7 @@ class NewSaveItem extends Control<GuiButton> implements CurrentItem {
 	readonly load: Action;
 	readonly delete: Action;
 	readonly openHistory: Action;
+	readonly toggleLock: Action;
 	readonly setColor: Action<[color: Color3]>;
 	readonly setName: Action<[name: string]>;
 
@@ -309,6 +329,8 @@ class NewSaveItem extends Control<GuiButton> implements CurrentItem {
 		super(gui);
 
 		this.save = this.parent(new Action());
+		this.toggleLock = this.parent(new Action()) //
+			.subCanExecuteFrom({ can: new ObservableValue(false) });
 		this.load = this.parent(new Action()) //
 			.subCanExecuteFrom({ can: new ObservableValue(false) });
 		this.delete = this.parent(new Action()) //
@@ -423,6 +445,15 @@ export class SaveBottom extends Control<SaveBottomDefinition> {
 		this.parent(new Control(gui.Head.History)) //
 			.subscribeToAction(openHistoryAction);
 
+		const lockButton = gui.Head.FindFirstChild("Lock") as GuiButton | undefined;
+		const lockIcon = lockButton?.FindFirstChildWhichIsA("ImageLabel");
+		const toggleLockAction = this.parent(new Action()) //
+			.subscribeActionObservable(this.event.addObservable(current.fReadonlyCreateBased((c) => c?.toggleLock)));
+		if (lockButton) {
+			this.parent(new Control(lockButton)) //
+				.subscribeToAction(toggleLockAction);
+		}
+
 		const name = this.parent(new TextBoxControl(gui.Head.Frame.SlotName.SlotNameTextBox));
 		this.event.subscribe(name.submitted, (name) => current.get()?.setName.execute(name));
 
@@ -469,6 +500,9 @@ export class SaveBottom extends Control<SaveBottomDefinition> {
 					name.text.set(meta.name);
 					gui.Head.Frame.BlockCount.TextLabel.Text = meta.blocks === 1 ? "1 block" : `${meta.blocks} blocks`;
 					gui.Head.ImageLabel.ImageColor3 = Serializer.Color3Serializer.deserialize(meta.color);
+					if (lockIcon) {
+						lockIcon.Image = meta.locked ? "rbxassetid://138299995195175" : "rbxassetid://92473953568721";
+					}
 				}, true);
 			},
 			true,
@@ -565,6 +599,7 @@ template.Visible = false;
 
 type SlotsPopupParts = {
 	readonly CloseButton: TextButton;
+	readonly SizeLabel: TextLabel;
 	readonly SearchTextBox: TextBox;
 
 	readonly Bottom: SaveBottomDefinition;
@@ -579,6 +614,25 @@ export class SavePopup extends PartialControl<SlotsPopupParts> {
 		super(template.Clone());
 
 		this.$onInjectAuto((playerData: PlayerDataStorage) => {
+			this.onDestroy(() => task.spawn(() => playerData.flushLocks()));
+
+			const sizeLabel = this.parts.SizeLabel;
+			const sizeColor = sizeLabel.TextColor3;
+			this.event.subscribeObservable(
+				playerData.data,
+				({ slots, storage }) => {
+					let used = 0;
+					for (const slot of slots) {
+						if (SlotsMeta.countsTowardStorage(slot.index)) used += slot.stored ?? 0;
+					}
+
+					const cap = GameDefinitions.PLAYER_STORAGE_CAP + storage;
+					sizeLabel.Text = `(${Strings.commaSeparated(used)}/${Strings.commaSeparated(cap)} bytes)`;
+					sizeLabel.TextColor3 = used > cap ? Colors.red : sizeColor;
+				},
+				true,
+			);
+
 			this.parent(new Control(this.parts.CloseButton)) //
 				.addButtonAction(() => this.hideThenDestroy());
 

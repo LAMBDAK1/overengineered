@@ -13,11 +13,13 @@ import { EnvBlacklistsController } from "client/controller/EnvBlacklistsControll
 import { FreecamController } from "client/controller/FreecamController";
 import { GameEnvironmentController } from "client/controller/GameEnvironmentController";
 import { GraphicsSettingsController } from "client/controller/GraphicsSettingsController";
+// import { HelpController } from "client/controller/HelpController";
 import { KeybindsController } from "client/controller/KeybindsController";
 import { LoadingController } from "client/controller/LoadingController";
 import { LocalPlayerController } from "client/controller/LocalPlayerController";
 import { ObstaclesController } from "client/controller/ObstaclesController";
 import { OtherPlayersController } from "client/controller/OtherPlayersController";
+import { PublicEffectsController } from "client/controller/PublicEffectsController";
 import { RagdollController } from "client/controller/RagdollController";
 import { MusicController } from "client/controller/sound/MusicController";
 import { SoundMixer } from "client/controller/sound/SoundMixer";
@@ -179,12 +181,14 @@ export namespace SandboxGame {
 			.onInit((c) => c.enable());
 
 		builder.services.registerService(UpdatePopupController);
+		// builder.services.registerService(HelpController);
 		ChatController.initializeAdminPrefix();
 		ChatController.initializeRejoinCommand();
 		builder.services.registerService(PopupController);
 		builder.services.registerSingletonValue(LogControl.instance);
 		builder.services.registerService(AchievementController);
 		builder.services.registerService(AnnouncementController);
+		builder.services.registerService(PublicEffectsController);
 		builder.services.registerService(BlockDamageController);
 		builder.services.registerService(MusicController);
 
@@ -199,25 +203,46 @@ export namespace SandboxGame {
 
 			{
 				const playerData = di.resolve<PlayerDataStorage>();
+				let missingNotice: { destroy(): void } | undefined;
+				let recovered = false;
+
+				CustomRemotes.playerDataRecovered.invoked.Connect((data) => {
+					playerData.applyRecovered(data);
+					CustomRemotes.playerDataRecoveredAck.send();
+
+					recovered = true;
+					missingNotice?.destroy();
+					di.resolve<PopupController>().showPopup(
+						new AlertPopup(
+							"YOUR SAVES ARE BACK\n\n" +
+								"Everything you do is saved again. Settings you changed while they were missing " +
+								"went back to your saved ones.",
+						),
+					);
+				});
 
 				// The status check is a remote call and yields.
 				task.spawn(() => {
 					if (playerData.getDatabaseStatus().dataLoaded) return;
+					// ignore if they came back while the status check was in flight
+					if (recovered) return;
 
-					di.resolve<PopupController>().showPopup(
-						new AlertPopup(
-							"DO NOT PANIC!\n\n" +
-								"WE CAN'T FIND YOUR SAVES RIGHT NOW\n\n" +
-								"The place where your builds are kept isn't answering. That's a problem on our " +
-								"side, not yours, and nothing of yours has been deleted.\n\n" +
-								"Because we can't SEE your builds, we're not allowed to CHANGE them. So for now:\n\n" +
-								"  •  You can build and fly as much as you want\n" +
-								"  •  But nothing you do will be saved\n" +
-								"  •  Your old builds are safe and will come back\n\n" +
-								"WHAT TO DO: leave and rejoin in a few minutes. If your saves are back in the " +
-								"list, everything is working again.",
-						),
-					);
+					missingNotice = di
+						.resolve<PopupController>()
+						.showPopup(
+							new AlertPopup(
+								"DO NOT PANIC!\n\n" +
+									"WE CAN'T FIND YOUR SAVES RIGHT NOW\n\n" +
+									"The place where your builds are kept isn't answering. That's a problem on our " +
+									"side, not yours, and nothing of yours has been deleted.\n\n" +
+									"Because we can't SEE your builds, we're not allowed to CHANGE them. So for now:\n\n" +
+									"  •  You can build and fly as much as you want\n" +
+									"  •  But nothing will be saved until they're back\n" +
+									"  •  Your old builds are safe and will come back\n\n" +
+									"We keep trying in the background. You'll get a message the moment your saves " +
+									"are back, and saving will work again. You don't need to rejoin.",
+							),
+						);
 				});
 
 				if (playerData.config.get().plot.autoLoad) {
@@ -255,6 +280,7 @@ export namespace SandboxGame {
 
 			TutorialServiceInitializer.initialize(builder, {
 				tutorials,
+				// undefined once the help menu ships: its quick start replaces this tutorial
 				tutorialToRunWhenNoSlots: NewBasicPlaneTutorial,
 			});
 		}

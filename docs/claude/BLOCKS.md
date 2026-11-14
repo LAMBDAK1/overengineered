@@ -61,13 +61,74 @@ All block logic extends `BlockLogic<typeof definition>`. The entire logic is wir
 - `initializeRecalcInputCache(key)` — same shape, but fed by `onkRecalcInputs` (recalc-only). Use with `onkRecalcInputs([], ...)` when you need inputs independently of each other (e.g. AND-gate that can short-circuit on `false` without both inputs being ready). Only for blocks **with** outputs — recalc never fires for an output-less block.
 - `onTicc` / `on` / `onk` — fire every tick (not on-demand); avoid for pure logic blocks.
 
+## Handlers run in registration order, and the first tick delivers everything at once
+
+`onTicc`, `on`, `onk`, `onkFirstInputs` and `onFirstInputs` all subscribe to the block's one `ticked` signal, and
+`ArgsSignal` calls its subscribers in the order they were connected (it stores them in an array). On the first tick
+every configured value arrives in that one pass, so **a handler that depends on state another handler sets must be
+registered after it**, or it acts on the default for that tick. A constant input never fires `onk` again, so a
+first-tick mistake stays for the whole ride.
+
+The infinite-torque blocks are where this bit:
+
+- **Servo:** the `cframe` setup must run before the angle handler, which picks the weld or the hinge by
+  `rotationWeld.Enabled`. The speed handler must also run before the angle handler: the weld tween reads its rate
+  from `HingeConstraint.AngularSpeed`, which the model leaves at 0, so an angle sent first snaps instead of turning.
+  The setup sends angle 0 first on purpose, so the configured angle is then tweened to from 0 at the configured speed.
+- **Slider:** the `targetPos` handler runs before the `onFirstInputs` setup creates the fake prismatic, so the setup
+  has to apply the current target itself, through the same percent-to-studs conversion (`targetStuds`).
+- **Motor:** the `cframe` setup is registered before the speed handler, as in the servo. In Studio, a fixed 2 rad/s
+  with infinite torque turned at 2 rad/s with the setup either before or after the speed handler; why the old order
+  worked was not traced. The weld only sets the angle between Base and Attach, so which side visibly turns follows the
+  assembly root (see REMOTES.md on root choice).
+
+Until `60dc390f`, `ArgsSignal.Fire` also skipped the subscriber after one that disconnected itself mid-fire, so every
+handler registered right after an `onkFirstInputs`/`onFirstInputs` missed the first tick. `tests/unit.luau` pins the
+fixed behaviour.
+
 ## Output values are stored, not pushed
 
-`output.x.set(type, value)` is a plain store (`LogicValueStorageContainer.set`): no equality check, no event. A
-consumer reads it on its own tick, and `onk`/`on` compare that read against the previous one
-(`executeFuncWithValues`, `inputCachePrev[k] === value.value`), so a same-value write is harmless downstream —
-no need to guard `set(false)` with "was it true". The flip side: a value that changes and reverts between two
+`output.x.set(type, value)` is a plain store (`LogicValueStorageContainer.set`), with no event. Setting the same
+non-table value and type that is already stored does nothing at all, so the cached result and every wired consumer's
+filtered copy survive; a table is always stored again, since a block may have mutated it in place. A consumer reads
+on its own tick, and `onk`/`on` compare that read against the previous one (`executeFuncWithValues`,
+`inputCachePrev[k] === value.value`), so a same-value write is harmless downstream — no need to guard `set(false)`
+with "was it true". `tests/unit.luau` pins the skip. The flip side: a value that changes and reverts between two
 ticks (`true` then `false` from two input events in one frame) is never seen; only the last stored value is read.
+
+## Tick order, loops and registers
+
+Reading a wired input pulls its source: `getOutputValue` ticks and recalculates the source first, once per tick. So in
+wiring without loops, every reader sees its source's value from the same tick, whatever order the runner visits blocks
+in. The runner's order (`logicPriority`, then add order) matters only for loops and for channels that are not wires,
+such as radio.
+
+A loop has no source-first order. A read that re-enters a block still being computed gets that block's stored value
+from the previous tick. So the loop is cut wherever it is first entered, and that used to depend on runner order,
+which comes from block uuids and differed between builds of the same circuit. `LogicLoops.cutLoops` (run by
+`SharedMachine` at ride start) makes the cut fixed:
+
+- It finds every loop group (strongly connected component of the wire graph).
+- Every block in a loop group whose definition says `stateful: true` (the Memory family, Counter, Delay, Edge
+  Detector, Impulse Extender/Generator, Value Extender/Delta, Numerical Filter, PID, Linear Easing, Spline Lerp,
+  T flip-flop, SR latch, shift registers) is a register. **A new block whose output depends on earlier ticks must
+  set it**, or a loop through it is cut somewhere arbitrary. Everything else passes values through.
+- Any cycle left with no register (a latch built from gates) gets one: a Fallback in it if there is one, otherwise
+  the block with the lowest uuid.
+- Wires inside the loop that read from a register read its start-of-tick value (`readStartOfTick`, filled by the
+  runner's `snapshotOutputs` before each tick). Wires leaving the loop read the fresh value as usual.
+- The runner recalculates every register after its ordered pass, so a register nothing outside the loop reads (a
+  gate chosen as a cut) still runs every tick.
+
+So stateful blocks in the same loop see each other one tick late, and the result no longer depends on order.
+Two cross-wired Memories swap every tick. A NOT wired to itself still never gets a value, and NOT → Delay → Fallback →
+NOT keeps its timing. On a ride's first tick a register has no previous value yet, so its loop readers see
+AVAILABLELATER for that one tick.
+
+`logicPriority` orders the runner, lower first; blocks with equal priority run in uuid order. The tiers are
+`BlockCreation.priority` (Sensor 100, Default 200, Output 300). A block that sets none takes its category's tier in
+`BlockListBuilder`: Sensor for the Sensor category; Output for Display and the Movement, Mechanics, Weapons and Wings
+actuators; Default otherwise. A value set on the block always wins.
 
 ## AVAILABLELATER vs GARBAGE
 
@@ -122,7 +183,7 @@ For output types, use a plain string array — `types: ["bool"]`, `types: ["vect
 
 **It is a complete list, not a partial override — every input key must appear in it, and every entry must be a real input key.** Adding an input without extending `inputOrder` throws when the config menu is opened (`Some definition keys were not present in the order`, `BlockConfigControls.ts:1663`); leaving a stale entry behind after removing an input throws the mirror error on the next check. `npm run check` catches both before Studio — step 6 runs `BlockAssertions.checkDefinitionOrder`, which reports `invalid inputOrder` in either direction. **It cannot see a definition whose `input`/`output` is composed rather than literal** (a `deepCombine` call, a spread, or an object filled by a loop); those are listed with their reason in `tests/generated/BlockDefinitions.generated.json` and counted on every run, so check there before assuming a block is covered — see [BUILD_AND_TOOLING.md](BUILD_AND_TOOLING.md). `outputOrder` follows the same rule and the same assertion, but fails silently rather than throwing: an unlisted output simply never appears in the graph picker or `getDebugInfo`.
 
-`connectorHidden: true` on an individual input prevents the player from wiring that input from the logic system at runtime — the value is treated as a constant set via the config panel only (e.g. `imin`/`imax` on the PID controller). Read such an input once with `onkFirstInputs([key], …)` rather than `initializeInputCache` or `onk` (see the input-subscription notes above) — it's set in build mode and constant for the ride, so any per-tick read or change-check after the first delivery is wasted; `onkFirstInputs` delivers once and disconnects.
+`connectorHidden: true` on an individual input prevents the player from wiring that input from the logic system at runtime — the value is treated as a constant set via the config panel only (e.g. `imin`/`imax` on the PID controller). Read such an input once with `onkFirstInputs([key], …)` rather than `initializeInputCache` or `onk` (see the input-subscription notes above) — it's set in build mode and constant for the ride, so any per-tick read or change-check after the first delivery is wasted; `onkFirstInputs` delivers once and disconnects. When the value is needed from an event handler or anything else that can run before the first tick, use `initializeConfigCache(key)` instead: same `get`/`tryGet` shape as an input cache, but it reads the constant straight from the input's storage with no per-tick subscription. Measured costs of every method: [BLOCK_LOGIC_PERFORMANCE.md](../BLOCK_LOGIC_PERFORMANCE.md).
 
 `configHidden: true` hides the input from the config menu UI, reducing visual clutter for inputs that don't need to be manually configured (e.g. the 16 I/O nodes on LuaCircuit). When `configHidden: true` and `connectorHidden: false`, the connector will still appear on the block face if something is wired to it.
 

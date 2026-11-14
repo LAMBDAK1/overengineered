@@ -29,16 +29,12 @@ export abstract class ServerBlockLogic<T extends GenericBlockLogicCtor> {
 			}
 
 			if (checkOwnership) {
-				const plot = SharedPlots.staticTryGetPlotByOwnerID(player.UserId);
+				const plot =
+					SharedPlots.instance?.tryGetPlotByOwnerID(player.UserId)?.instance ??
+					SharedPlots.staticTryGetPlotByOwnerID(player.UserId);
 				if (!plot) return "No plot";
-				// An anchored block cannot have physics ownership
-				if (
-					block.IsDescendantOf(plot) || //
-					block.Anchored ||
-					block.AssemblyRootPart?.Anchored
-				)
-					return;
-				return "Block not on plot and not anchored";
+				if (block.IsDescendantOf(plot)) return;
+				return "Block not on plot";
 			}
 		}
 	}

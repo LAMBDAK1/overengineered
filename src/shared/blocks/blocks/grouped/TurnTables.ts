@@ -276,12 +276,12 @@ class TurnTableHingeLogic extends TurnTableLogic_Base<typeof hingeDefinition> {
 		super(hingeDefinition, block);
 
 		const hinge = this.instance.Base.HingeConstraint;
-		this.on(({ enableLimits, lowerAngleLimit, upperAngleLimit, restitution }) => {
-			hinge.LimitsEnabled = enableLimits;
-			hinge.LowerAngle = lowerAngleLimit;
-			hinge.UpperAngle = upperAngleLimit;
-			hinge.Restitution = restitution;
+		this.onkFirstInputs(["lowerAngleLimit", "upperAngleLimit", "restitution"], (inputs) => {
+			hinge.LowerAngle = inputs.lowerAngleLimit;
+			hinge.UpperAngle = inputs.upperAngleLimit;
+			hinge.Restitution = inputs.restitution;
 		});
+		this.onk(["enableLimits"], ({ enableLimits }) => (hinge.LimitsEnabled = enableLimits));
 	}
 }
 
@@ -305,7 +305,7 @@ class TurnTableServoLogic extends TurnTableLogic_Base<typeof servoDefinition> {
 			hinge.AngularSpeed = speed;
 		});
 
-		this.onk(["stiffness"], ({ stiffness }) => {
+		this.onkFirstInputs(["stiffness"], ({ stiffness }) => {
 			hinge.AngularResponsiveness = stiffness;
 		});
 	}

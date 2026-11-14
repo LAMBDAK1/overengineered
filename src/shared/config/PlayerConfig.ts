@@ -137,6 +137,7 @@ declare global {
 		readonly simplified_aerodynamics: boolean;
 		readonly advanced_aerodynamics: boolean;
 		readonly windVelocity: Vector3;
+		readonly impactFire: boolean;
 		readonly impactDestruction: ImpactDestructionConfiguration;
 	};
 	type MusicTrackVolume = {
@@ -281,6 +282,12 @@ declare global {
 	type PlayerConfigDefinition = typeof PlayerConfigDefinition;
 }
 
+/** Slider ranges of the impact destruction settings; the server clamps stored values to the same ranges */
+export const ImpactDestructionBounds = {
+	blockHealthModifier: { min: 100, max: 4000 },
+	blockMinimalDamageThreshold: { min: 0, max: 100 },
+} as const;
+
 export const PlayerConfigDefinition = {
 	replication: {
 		type: "replication",
@@ -403,6 +410,7 @@ export const PlayerConfigDefinition = {
 				advanced_aerodynamics: false as boolean,
 				simplified_aerodynamics: true as boolean,
 				windVelocity: Vector3.zero,
+				impactFire: true as boolean,
 				impactDestruction: {
 					enabled: true as boolean,
 					blockHealthModifier: 1100 as number,

@@ -4,6 +4,7 @@ import { InstanceBlockLogic } from "shared/blockLogic/BlockLogic";
 import { inferEnumLogicType } from "shared/blockLogic/BlockLogicTypes";
 import { BlockSynchronizer } from "shared/blockLogic/BlockSynchronizer";
 import { BlockCreation } from "shared/blocks/BlockCreation";
+import { PublicEffects } from "shared/blocks/PublicEffects";
 import type { BlockLogicFullBothDefinitions, InstanceBlockLogicArgs } from "shared/blockLogic/BlockLogic";
 import type { BlockBuilder } from "shared/blocks/Block";
 
@@ -162,6 +163,16 @@ const updateDataType = t.interface({
 });
 type UpdateData = t.Infer<typeof updateDataType>;
 
+const received = new Set<TracerBlockModel>();
+PublicEffects.register("publicTracers", (shouldStop) => {
+	for (const block of received) {
+		if (!shouldStop(block)) continue;
+
+		block.Emitter.Trail.Enabled = false;
+		block.Emitter.Trail.Clear();
+	}
+});
+
 const update = ({
 	block,
 	enabled,
@@ -174,6 +185,11 @@ const update = ({
 	texture,
 	textureMode,
 }: UpdateData) => {
+	if (!received.has(block)) {
+		received.add(block);
+		block.Destroying.Connect(() => received.delete(block));
+	}
+
 	const trail = block.Emitter.Trail;
 	trail.Enabled = enabled;
 	trail.Transparency = new NumberSequence(transparency, 1); // todo: player determined
@@ -207,20 +223,13 @@ export class Logic extends InstanceBlockLogic<typeof definition, TracerBlockMode
 	constructor(block: InstanceBlockLogicArgs) {
 		super(definition, block);
 
+		const textureCache = this.initializeConfigCache("texture");
+		const textureModeCache = this.initializeConfigCache("textureMode");
+
 		let lastSent: UpdateData | undefined;
 		this.onk(
-			[
-				"enabled",
-				"size",
-				"length",
-				"transparency",
-				"lightEmission",
-				"color",
-				"lifetime",
-				"texture",
-				"textureMode",
-			],
-			({ enabled, size, length, transparency, lightEmission, color, lifetime, texture, textureMode }) => {
+			["enabled", "size", "length", "transparency", "lightEmission", "color", "lifetime"],
+			({ enabled, size, length, transparency, lightEmission, color, lifetime }) => {
 				lastSent = {
 					block: this.instance,
 					enabled,
@@ -230,8 +239,8 @@ export class Logic extends InstanceBlockLogic<typeof definition, TracerBlockMode
 					lightEmission,
 					color,
 					lifetime,
-					texture,
-					textureMode,
+					texture: textureCache.get(),
+					textureMode: textureModeCache.get() as UpdateData["textureMode"],
 				};
 				Logic.events.update.sendOrBurn(lastSent, this);
 			},

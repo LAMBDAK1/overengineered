@@ -61,6 +61,14 @@ export namespace SlotsMeta {
 	export function isTestSlot(index: number) {
 		return index >= testSlotStart;
 	}
+	/** Autosave, Last exit and test slots get the slot cap only, so a player at the storage cap still autosaves */
+	export function countsTowardStorage(index: number) {
+		return index >= 0 && !isTestSlot(index);
+	}
+	/** Special slots an admin may save over or delete */
+	export function isAdminOverwritable(index: number) {
+		return index === quitSlotIndex || index === autosaveSlotIndex;
+	}
 
 	export function indexOf(slots: readonly SlotMeta[], index: number): number | undefined {
 		return slots.findIndex((slot) => slot.index === index);

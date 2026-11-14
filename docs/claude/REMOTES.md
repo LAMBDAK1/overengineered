@@ -19,11 +19,21 @@ All remote types are in `engine/shared/event/PERemoteEvent.ts`. Pick the right c
 | `A2SRemoteEvent` | Anyone → Server | Fires from either side, always received by server |
 | `A2OCRemoteEvent` | Anyone → a specific owner Client | Targeted client delivery from any context |
 
+**Request middleware runs only on the calling side.** `addMiddleware` on a `C2S2CRemoteFunction` or
+`S2C2SRemoteFunction` (`PERemoteEventMiddlewares.rateLimiter`, `.timeout`) wraps `send`, so on a `C2S2C` it limits
+the client's own calls and nothing else: `OnServerInvoke` calls the subscriber directly, and an exploiter invokes the
+`RemoteFunction` without going through `send` at all. A limit that protects the server must be enforced in the
+server's handler — `PlayModeController` does this for `md_set`, per player.
+
+**A failed invoke returns an `ErrorResponse`.** When `InvokeServer`/`InvokeClient` throws — for example, the
+recipient is not a connected player — `send` returns `{ success: false, message }` with the error text instead of
+waiting.
+
 **`BlockSynchronizer`** is the standard tool for syncing block state across all clients. When a client calls `.send(arg)`:
 1. Fires `.invoked` locally so the sender updates immediately
 2. Sends to server via `c2s`; server validates with runtime type-checking (kicks the player on failure) and runs any middleware
 3. Server broadcasts to all other players via `s2c`
-4. Newly joined players automatically receive saved state
+4. Newly joined players automatically receive saved state, filtered by the same per-player middleware as a live send
 
 Use `BlockSynchronizer` for any block property that must be consistent across all clients. Attach it to the block's `logic.events` in the `BlockBuilder`. Because state changes originate from the client and are relayed by the server rather than computed server-side, processing load is shifted to clients — the server acts only as a validator and broadcaster, keeping server overhead low.
 
@@ -48,7 +58,7 @@ See `src/server/blocks/logic/TracerBlockServerLogic.ts` for a canonical two-tier
 2. Wire middleware or other server behaviour in the constructor via `logic.events.<synchronizer>.addServerMiddleware(...)`.
 3. Import the class in `src/server/blocks/ServerBlockLogicController.ts` and add an entry to `serverBlockLogicRegistry` keyed by the block's id string.
 
-`ServerBlockLogicController` automatically registers a global `addServerMiddleware` on every `logic.events` entry for all blocks that validates the block exists in the workspace and the invoker is in ride mode — this runs before any block-specific middleware, so individual server logic classes don't need to repeat that check. `protected isValidBlock(block, player)` is also available on the base class for ad-hoc checks.
+`ServerBlockLogicController` automatically registers a global `addServerMiddleware` on every `logic.events` entry for all blocks that validates the block exists in the workspace and is on the invoker's plot — this runs before any block-specific middleware, so individual server logic classes don't need to repeat that check. It does **not** check ride mode (it passes `checkRideMode = false`, so build-mode `immediate` logic can send). `protected isValidBlock(block, player)` is also available on the base class for ad-hoc checks.
 
 **Anti-spoofing guard in `.invoked` handlers** — the global middleware check covers `addServerMiddleware` handlers only. Direct `.invoked.Connect` listeners (used when the server needs to react to a client event beyond just broadcasting) are NOT covered and must guard manually: always call `if (!this.isValidBlock(block, player)) return;` at the top of any such handler. See `PropellantBlockServerLogic.ts` for the canonical example.
 
@@ -79,9 +89,23 @@ add a consumer of `RadioSendData`, it must run the same check.
 
 **Block damage is server-authoritative.** Block HP lives on the server (`ServerBlockDamageController`); clients never store health. Deal damage by calling `BlockDamageController.instance.applyDamage(block, damage)` on the **owning client** — it accumulates per block and flushes one batched `CustomRemotes.damageSystem.damage` send per frame. Never use a blocking `C2S2CRemoteFunction` for high-frequency events like this (a laser hits every tick) — a fire-and-forget `C2SRemoteEvent`, batched per frame, is the pattern. The server decides breaks and broadcasts `damageSystem.broken`; subscribe to that for client reactions (e.g. TNT chains).
 
+**A client's effect send is relayed unvalidated** to every other player (minus blacklist and `othersEffects`) unless the effect has a relay check: `effect.addRelayCheck((sender, arg) => boolean)`, server-only. The weapon spawners register theirs in `UnreliableRemoteHandler` — the origin part must be on the sender's plot, because receiving clients treat the origin's owner as the shooter.
+
 **C2C effects run on every client.** A projectile/effect spawned via `C2CRemoteEvent` is created on the sender *and* every other client. Any side effect that must happen once — applying damage, triggering an explosion — must be gated to the owner (`if (Players.LocalPlayer === this.owner)`), or the server receives it once per player. Thread an `owner: Player` through and gate on it (see `WeaponProjectile`).
 
 **Weapon damage modifiers are sequential, not override (Balatro-style).** `applyModifiers(base, modifiers, key)` in `BaseProjectileLogic.ts` folds an *ordered* list left-to-right: for each modifier carrying that `key`, `value *= mv.value` when `isRelative`, else `value += mv.value`. Order matters — `+5` then `×2` is `(base + 5) * 2`, not `(base + 5×2)`. Each stat (`impactDamage`, `heatDamage`, `explosiveDamage`, `speedModifier`, `lifetimeModifier`) is reduced **independently** over the same ordered list. The per-output list is assembled by `ModuleCollection.recalc` from the module graph in path order: the emitter's own modifier → connected upgrades → the `1/N` split-ratio for multiple outputs. It is *not* a collapse-to-one-value override — an older `calculateTotalModifier` did that and was a bug.
+
+**Welding a character to a block is decided by the assembly root, and every machine must pick the same one.** Physics replication follows the root: the owner sends it, and a client that picked a different part applies nothing, so the character freezes on that client's screen while looking fine to its owner. Root choice ranks `Massless` first, then `RootPriority`, then size. `OtherPlayersController` makes other players' characters massless locally, so anything that can differ per client changes the answer; `HumanoidRootPart` is exempt from that for this reason (`Massless` is ignored on a root anyway). `BackMountBlockServerLogic` sets `RootPriority` on it and waits before creating the joint, so the priority reaches everyone first; the joint also keeps the root still, so the block's client moves the character to the mount first, leaving the weld nothing to move on a level build. Verified in a Server & Clients test: the freeze only appears with two clients, and a large block hides it because then both clients pick the block.
+
+**Server-sent effects wait for the client to load.** A player joins `ServerPlayersController.getPlayers()` at
+`player_init`, but their client only connects its effect listeners when its host is built, and sends `player_loaded`
+after that. Events sent in between were dropped by Roblox ("Remote event invocation discarded event … did you forget
+to implement OnClientEvent?", doubling counts in the log). `ServerEffect` now queues a not-yet-loaded player's effects
+in one per-player queue shared by every effect, so their order holds, and delivers them on `playerLoadedOnce`:
+at most 64 per player (oldest dropped), anything older than 5 s skipped, cleared on leave. The per-player filter runs on
+delivery, not on queueing, because `filterPlayer` reads `PlayerDatabase.get`, which makes a blocking HTTP request for a
+row that is not cached yet. Before this, a spawn-vehicle rocket's particle effect during a join made that request
+inside the server's block-logic tick.
 
 **Server-sent effects need a network-ownable host part.** `ServerEffect.send(part, …)` silently no-ops for anchored parts (`CanSetNetworkOwnership` is false). Prefer an already-replicated part (e.g. the source block). For a position-only effect, create a throwaway part **unanchored**, send, then anchor it in the same synchronous block (no physics step runs between) so it neither falls nor is skipped — a freshly-created part can otherwise arrive `nil` on clients before replication catches up.
 

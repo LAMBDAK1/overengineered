@@ -6,8 +6,25 @@ Headless checks, Studio tests, running compiled game code from the console, and 
 
 ## Checks that run without Studio
 
-`npm run check` runs six checks: `assetcheck`, `updatelogs`, `testsave` and `unit` under Lune, then
-`tripwires` and `utility-index` under Node.
+`npm run check` runs seven checks: `assetcheck`, `updatelogs`, `testsave` and `unit` under Lune, then
+`tripwires`, `utility-index` and `comment-history` under Node. `npm run publish` runs it first, then `placecheck`,
+so any failure blocks a publish.
+
+### `placecheck` — what a publish would upload
+
+`npm run publish` uploads `place.rbxl` exactly as it is on disk, which is whatever Studio last saved, not a build of
+the repo. `scripts/publish.js` only refuses a place older than `out/`. `tests/placecheck.luau` (`npm run checkplace`)
+opens the place and refuses it when:
+
+- **a script differs from `out/`, or a compiled script is missing.** With Rojo disconnected, the place holds only
+  what was synced by hand, so a feature switched off in the repo can still be switched on in the place.
+- **a test hook is left in it:** any instance whose name starts with `zz`, or `TEST ONLY` in a script's source.
+
+It only warns when `ServerScriptService.studioconfig` is a script. Rojo syncs `.studioconfig.json` into the edit
+place, so a Studio save carries it, write token included, into `place.rbxl`. That is accepted: `ServerScriptService`
+never replicates to clients, and `ExternalDatabase` reads the token only when `RunService.IsStudio()`.
+
+When it fails on drift, sync or re-assemble rather than editing the place by hand.
 
 ### `testsave` — the save-compatibility gate
 
@@ -46,6 +63,10 @@ upgrade chain** — a fixture at the oldest serializer version (4) is pushed thr
 at `latestVersion` intact, which nothing else exercised. Add cases here rather than in a `.test.ts` whenever the
 subject does not need the engine.
 
+The `signals` section pins `Signal.Fire`: a subscriber disconnected mid-fire is not skipped or repeated, and one
+connected mid-fire (including one that reconnects itself) first runs on the next fire. Change `Fire` only with these
+passing; the reconnect case once froze every client for 10 seconds on each input-type change.
+
 The `luau semantics` section pins the language facts the tripwires rest on: `0` and `""` are truthy, `nil == nil`,
 `NaN ~= NaN`, `2^53 + 1 == 2^53`, a dot call on a namespace method binds its first argument to `self`, and
 `.as<T>()` returns the checker unchanged.
@@ -81,6 +102,30 @@ rule and exits 0. There is no allowlist.
 `npm run check`, fail when it no longer matches `src/` and name each signature, file or description that moved.
 The one-sentence description under each file is hand-written and kept by regeneration; only its presence is
 checked, so rewording or rewrapping it never fails the check.
+
+### `comment-history` — comments that retell history
+
+`scripts/comment-history.js`, alone with `npm run checkcomments`. Flags a comment line in `src/` that tells how the
+code used to work or what a fix changed: "previously", "until now", "before this fix", "was a bug", "the old
+order/gate/check/…", and "used to" when it is not "is used to …". The story belongs in the commit message; the
+comment should state the rule as it stands. Only comments are read, and "no longer", "fixed" and a bare "old" are
+left alone because they mostly describe current behaviour. Commented-out code and notes are not its concern. The
+patterns run against in-script fixtures before `src/` is scanned, and the run exits 2 if one stops matching.
+
+### Scanner cache
+
+Both scanners cache through `scripts/scan-cache.js`, in `node_modules/.cache/overengineered-scanners/`; `--no-cache`
+ignores it. Each reads types, and a file's types come from everything it imports. So a file's key covers its own text,
+every `src` file in its import closure, and the global inputs: the scanner script, the TypeScript and roblox-ts
+versions, `tsconfig.json`, the lockfiles, `patch-types.js` and the `lua.d.ts` it patches, and every `src` file that can
+declare globals (`.d.ts`, `declare global`, a triple-slash reference). Any global input changing rescans everything,
+and reruns the tripwires self-test. `tripwires` caches hits per file and builds the program only when a file is stale;
+`utility-index` caches its whole index under one key.
+
+Timings on 642 files: `tripwires` 24–35 s cold, about 3 s with nothing changed; `utility-index` about 4 s and 1 s. A
+change to a widely imported file (`Signal.ts`) still rescans nearly everything, which is correct. Import resolution
+is done once per bare specifier: with `baseUrl` `src` and no `paths`, a bare import resolves the same from every file
+(4,275 imports checked, 0 mismatches), since the only `node_modules` under `src` is the excluded transformer's.
 
 ### `assetcheck` — asset and block integrity
 
@@ -210,7 +255,40 @@ corrupts what Studio is syncing; `driver.sh build` refuses outright while the wa
 importing Roblox services cannot load, which rules out most `client/` code and any block that touches
 `Workspace`.
 
-Lint/format: ESLint + Prettier are configured via `.eslintrc`. Run with `npx eslint src` or via IDE.
+Lint/format: ESLint + Prettier are configured via `.eslintrc`. Run with `npx eslint src` or via IDE; `npm run lint`
+runs the whole tree with zero warnings allowed.
+
+## Seeing what the watcher refused
+
+While `npm run dev` is up, `rbxtsc -w` owns `out/`, and a compile error anywhere stops it emitting anything: every
+file stays stale, so a test or a Studio sync runs against old code and a fix just saved looks like it failed. The
+watcher reports the error only in its terminal, which a tool cannot read, so `scripts/watch-all.js` copies every
+line of that terminal, timestamped, into `.dev.log` at the repo root (truncated each start). The `verify` skill
+(`.claude/skills/verify/`) reads it:
+
+| Command | What it does |
+|---|---|
+| `node .claude/skills/verify/scripts/wait-for-out.js` | Waits until every source has a fresher `.luau` twin; on timeout lists the stale files and prints the watcher's last compile cycle |
+| `node .claude/skills/verify/scripts/dev-errors.js` | Prints the last compile cycle from `.dev.log` (`--all` for rojo and asset output) |
+| `node .claude/skills/verify/scripts/compile-check.js` | Runs the real `rbxtsc` compile into a per-process scratch directory with a throwaway Rojo project, then deletes both; safe with the watcher up |
+| `node .claude/skills/verify/scripts/probe.js -e '…'` | Runs a Luau snippet against `out/` with `load("shared/…")` |
+| `npm test` | Waits for the watcher's compile in flight (or builds once with no watcher), then runs `npm run check` |
+
+`compile-check.js` checks every path it writes or removes before running: `rbxtsc` deletes every file in its
+`outDir` that has no source, and an empty `outDir` once deleted the repository root (2026-11-09).
+
+Three ways the watcher goes quiet without saying so in any file:
+
+- **A file renamed over while it is reading it.** `sed -i` (and any tool that writes a temporary file and renames it
+  over the original) makes the watcher read a file that is already gone, and it can stop. Edit in place.
+- **A Luau global or reserved word as an identifier** (`next`, `pairs`, `type`, `table`, …). `tsc` accepts it; only
+  `rbxtsc` refuses, so lint and `npm run typecheck` stay green while `out/` goes stale.
+- **A stale copy.** Restoring a file to the exact text it last compiled after a throwaway edit can leave the watcher
+  reporting the throwaway's error; change the text again, then back.
+
+`npm run dev` also keeps Studio's "Enable Studio as MCP server" switch on for every local account
+(`scripts/studio-mcp-setting.js`), and `.mcp.json` registers that server with Claude Code, alongside
+`scripts/studio-mcp.js`.
 
 ## Rojo / Project Structure
 

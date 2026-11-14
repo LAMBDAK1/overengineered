@@ -148,6 +148,27 @@ export namespace Strings {
 		return "0 sec";
 	}
 
+	const durationUnits: { readonly [k in string]: number } = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
+
+	/** Seconds in a duration like `30s`, `1m`, `30d`, `1w2d` or `1d 12h`; a bare number is seconds. Undefined if malformed. */
+	export function parseDuration(input: string): number | undefined {
+		const [compact] = input.lower().gsub("%s", "");
+		if (compact === "") return;
+
+		const [bare] = compact.match("^%d+$");
+		if (bare !== undefined) return tonumber(bare);
+
+		const [rest] = compact.gsub("%d+[smhdw]", "");
+		if (rest !== "") return;
+
+		let seconds = 0;
+		for (const [count, unit] of compact.gmatch("(%d+)([smhdw])")) {
+			seconds += tonumber(count)! * durationUnits[tostring(unit)];
+		}
+
+		return seconds;
+	}
+
 	function abbreviate(num: number, arr: readonly string[]) {
 		const round = (val: number) => (math.round(val * 100) / 100) * sign;
 		const sign = math.sign(num);
@@ -171,5 +192,15 @@ export namespace Strings {
 	const kmb = ["", "k", "M", "B", "T", "Qd", "Qn", "Sx", "Sp", "Oc", "No", "Dc"];
 	export function prettyKMB(num: number): string {
 		return abbreviate(num, kmb);
+	}
+
+	/** Groups integers by 3 with commas, `-1234567.5` to `-1,234,567.5` */
+	export function commaSeparated(num: number): string {
+		const [sign, digits, rest] = tostring(num).match("^(-?)(%d+)(.*)$");
+		if (digits === undefined) return tostring(num); // nan, inf
+
+		// grouped from the right, so the reversed string takes a comma after every third digit
+		const grouped = (digits as string).reverse().gsub("%d%d%d", "%0,")[0].reverse();
+		return `${sign}${grouped.sub(1, 1) === "," ? grouped.sub(2) : grouped}${rest}`;
 	}
 }

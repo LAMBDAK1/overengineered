@@ -39,6 +39,7 @@ import { BlockManager } from "shared/building/BlockManager";
 import { SharedPlot } from "shared/building/SharedPlot";
 import { SharedRagdoll } from "shared/SharedRagdoll";
 import { spawnPositions } from "shared/SpawnPositions";
+// import type { HelpController } from "client/controller/HelpController";
 import type { SwitchControlDefinition } from "client/gui/controls/SwitchControl";
 import type { MainScreenLayout } from "client/gui/MainScreenLayout";
 import type { PopupController } from "client/gui/PopupController";
@@ -104,8 +105,15 @@ export class BuildingModeScene extends Scene {
 		@inject mainScreen: MainScreenLayout,
 		@inject theme: Theme,
 		@inject windowPositions: WindowPositionController,
+		// @inject help: HelpController,
 	) {
 		super();
+
+		// const helpButton = this.parent(mainScreen.top.main.addButton("Help", { iconId: 98943721557973 }))
+		// 	.themeButton(theme, "buttonNormal")
+		// 	.addButtonAction(() => help.show())
+		// 	.subscribeVisibilityFrom({ main_enabled: this.enabledState });
+		// helpButton.instance.LayoutOrder = 1;
 
 		this.parent(mainScreen.top.main.addButton("Save", { iconId: 15266766613 }))
 			.themeButton(theme, "buttonNormal")
@@ -178,7 +186,7 @@ export class BuildingModeScene extends Scene {
 			.subscribeToAction(mode.teleportToPlotAction)
 			.subscribeVisibilityFrom({ main_enabled: this.enabledState });
 
-		this.parent(mainScreen.top.main.addButton("Update Logs", { iconId: 98943721557973 })) //
+		this.parent(mainScreen.top.main.addButton("Update Logs", { iconId: 87846110657364 })) //
 			.subscribeToAction(mode.openUpdateLogsAction)
 			.subscribeVisibilityFrom({ main_enabled: this.enabledState });
 	}
@@ -468,7 +476,16 @@ export class BuildingMode extends PlayMode {
 		};
 
 		if (!prev) {
-			task.delay(0.1, () => this.teleportToPlot(this.playerData.config.get().plot.autoPlotTeleportCenter));
+			// the first character can finish loading after build mode starts
+			LocalPlayer.rootPart.waitOnceFor(
+				(rootPart) => rootPart !== undefined,
+				() =>
+					task.delay(0.1, () => {
+						// ignore if the player already started riding
+						if (!this.isEnabled()) return;
+						this.teleportToPlot(this.playerData.config.get().plot.autoPlotTeleportCenter);
+					}),
+			);
 		} else {
 			task.delay(0.1, tp);
 		}

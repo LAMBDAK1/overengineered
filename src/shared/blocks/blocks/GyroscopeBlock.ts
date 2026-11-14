@@ -126,7 +126,7 @@ class Logic extends InstanceBlockLogic<typeof definition, GyroBlockModel> {
 
 		const targetAngle = this.initializeInputCache("targetAngle");
 		const enabled = this.initializeInputCache("enabled");
-		const gMode = this.initializeInputCache("gyroMode");
+		const gMode = this.initializeConfigCache("gyroMode");
 		const updateX = this.initializeInputCache("angleXEnabled");
 		const updateY = this.initializeInputCache("angleYEnabled");
 		const updateZ = this.initializeInputCache("angleZEnabled");
@@ -172,7 +172,8 @@ class Logic extends InstanceBlockLogic<typeof definition, GyroBlockModel> {
 
 			if (mode === "followCursor") {
 				const pos = attachment.Position;
-				cachedCFrame = convertToEnabledCframe(CFrame.lookAt(pos, cursor.getPoint()).mul(magicCFrameOffset));
+				const dir = cursor.getRay().Direction;
+				cachedCFrame = convertToEnabledCframe(CFrame.lookAt(pos, pos.add(dir)).mul(magicCFrameOffset));
 				return CFrameToAngle(cachedCFrame);
 			}
 			return Vector3.zero;

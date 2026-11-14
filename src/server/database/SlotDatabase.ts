@@ -1,13 +1,15 @@
 import { Players } from "@rbxts/services";
 import { Db } from "engine/server/Database";
+import { JSON } from "engine/shared/fixes/Json";
 import { isNotAdmin_AutoBanned } from "server/BanAdminExploiter";
 import { ExternalDatabase } from "server/database/ExternalDatabase";
+import { ZstdSave } from "server/database/ZstdSave";
 import { BlocksSerializer } from "shared/building/BlocksSerializer";
 import { GameDefinitions } from "shared/data/GameDefinitions";
 import { CustomRemotes } from "shared/Remotes";
 import { SlotsMeta } from "shared/SlotsMeta";
 import type { DatabaseBackend } from "engine/server/backend/DatabaseBackend";
-import type { ExternalRead } from "server/database/ExternalDatabase";
+import type { ExternalRead, ExternalWrite, MigrationResponse } from "server/database/ExternalDatabase";
 import type { PlayerDatabase } from "server/database/PlayerDatabase";
 import type { LatestSerializedBlocks } from "shared/building/BlocksSerializer";
 
@@ -22,6 +24,26 @@ export type SlotWriteResult =
  */
 const datastoreOnlySlots = new ReadonlySet<number>([SlotsMeta.lastRunSlotIndex]);
 
+// `characters` of the JSON, which the datastore outbox holds, meet the slot cap; `stored`, the bytes of the Zstd
+// the backend stores, meet the player cap. Both are recorded on the slot's meta
+const encode = (blocks: LatestSerializedBlocks) => {
+	const json = BlocksSerializer.objectToJson(blocks);
+	const text = JSON.serialize(json);
+	const blob = ZstdSave.compress(text);
+
+	return { json, blob, characters: text.size(), stored: buffer.len(blob) };
+};
+type Encoded = ReturnType<typeof encode>;
+type Measured = { readonly characters: number; readonly stored: number };
+
+// rewrites online players' JSON slots as Zstd in the background, one slot per server at a time like the outbox drain
+const Compressor = {
+	startDelay: 60, // seconds after joining
+	interval: 15, // seconds between slots
+} as const;
+
+const mb = (size: number) => string.format("%.1f", size / 1_048_576);
+
 @injectable
 export class SlotDatabase {
 	private readonly onlinePlayers = new Set<number>();
@@ -29,6 +51,10 @@ export class SlotDatabase {
 	/** Queued saves. In memory only: the payload is durable in the datastore either way, and the next server
 	 *  backfills it on first read. This only saves the player from having to reopen the slot. */
 	private readonly pendingSync = new Set<string>();
+	/** Players with slots the compressor has yet to try, taken in turn */
+	private readonly compressQueue: number[] = [];
+	/** Per player, the slots tried this session, so one it could not rewrite is not read again every pass */
+	private readonly compressTried = new Map<number, Set<number>>();
 
 	constructor(
 		private readonly datastore: DatabaseBackend<
@@ -48,7 +74,16 @@ export class SlotDatabase {
 			(slot) => BlocksSerializer.objectToJson(slot),
 		);
 
-		Players.PlayerAdded.Connect((plr) => this.onlinePlayers.add(plr.UserId));
+		Players.PlayerAdded.Connect((plr) => {
+			this.onlinePlayers.add(plr.UserId);
+			if (plr.UserId <= 0) return;
+
+			task.delay(Compressor.startDelay, () => {
+				if (this.onlinePlayers.has(plr.UserId) && !this.compressQueue.includes(plr.UserId)) {
+					this.compressQueue.push(plr.UserId);
+				}
+			});
+		});
 		Players.PlayerRemoving.Connect((plr) => {
 			this.onlinePlayers.delete(plr.UserId);
 
@@ -82,42 +117,78 @@ export class SlotDatabase {
 			}
 		});
 
-		CustomRemotes.admin.adminMigrateRequest.invoked.Connect((invoker, arg) => {
-			if (isNotAdmin_AutoBanned(invoker, "adm_request_migration")) return;
+		task.spawn(() => {
+			while (true as boolean) {
+				task.wait(Compressor.interval);
+
+				const [ok, err] = pcall(() => this.compressNext());
+				if (!ok) $warn(`Compressing a slot failed: ${err}`);
+			}
+		});
+
+		CustomRemotes.admin.adminMigrate.subscribe((invoker, arg): Response<MigrationResponse> => {
+			if (isNotAdmin_AutoBanned(invoker, "adm_request_migration"))
+				return { success: false, message: "Not an admin" };
 
 			const result = ExternalDatabase.MigratePlayer(arg.from, arg.to);
+			if (result.metadata !== "SUCCESS" || result.saves !== "SUCCESS") {
+				return {
+					success: false,
+					message: `Migration failed: metadata ${result.metadata}, saves ${result.saves}`,
+				};
+			}
 
 			// /migrate rewrites rows UPSTAIRS only, and copies blobs verbatim — so they keep the source's
 			// `savedAt`, or none at all for a legacy import. The destination's local copies would win the
 			// comparison, hide the migration, and then get flushed back over it. Throw them away.
-			if (result.metadata === "SUCCESS" && result.saves === "SUCCESS") {
-				this.adoptExternal(arg.to);
+			this.adoptExternal(arg.to);
+			return { success: true, ...result };
+		});
+		CustomRemotes.admin.adminUpdateMeta.subscribe((invoker, arg): Response => {
+			if (isNotAdmin_AutoBanned(invoker, "adm_update_meta")) return { success: false, message: "Not an admin" };
+
+			this.setMeta(arg.plrID, this.getMeta(arg.plrID) ?? []);
+			if (!this.players.isDataLoaded(arg.plrID)) {
+				return { success: false, message: `Could not load ${arg.plrID}'s data; writes are refused` };
 			}
 
-			CustomRemotes.admin.adminMigrateReply.send(invoker, result);
-		});
-		CustomRemotes.admin.adminUpdateMeta.invoked.Connect((invoker, arg) => {
-			if (isNotAdmin_AutoBanned(invoker, "adm_update_meta")) return;
-			this.setMeta(arg.plrID, this.getMeta(arg.plrID) ?? []);
+			return { success: true };
 		});
 		// Cuts a player off from their saves — a punishment, not a deletion. The blocks stay in both stores on
 		// purpose, so access can be given back. Do not "fix" this into a real wipe.
-		CustomRemotes.admin.adminWipeData.invoked.Connect((invoker, plrID) => {
-			if (isNotAdmin_AutoBanned(invoker, "adm_wipe_data")) return;
+		CustomRemotes.admin.adminWipeData.subscribe((invoker, plrID): Response => {
+			if (isNotAdmin_AutoBanned(invoker, "adm_wipe_data")) return { success: false, message: "Not an admin" };
+
 			this.setMeta(plrID, []);
+			if (!this.players.isDataLoaded(plrID)) {
+				return { success: false, message: `Could not load ${plrID}'s data; writes are refused` };
+			}
+
+			return { success: true };
+		});
+		CustomRemotes.admin.adminUnlockSlot.subscribe((invoker, { plrID, index }): Response => {
+			if (isNotAdmin_AutoBanned(invoker, "adm_unlock_slot")) return { success: false, message: "Not an admin" };
+
+			const meta = this.getMeta(plrID);
+			if (!meta.any((s) => s.index === index))
+				return { success: false, message: `${plrID} has no slot ${index}` };
+
+			this.setMeta(plrID, SlotsMeta.withSlot(meta, index, { locked: false }));
+			if (!this.players.isDataLoaded(plrID)) {
+				return { success: false, message: `Could not load ${plrID}'s data; writes are refused` };
+			}
+
+			return { success: true };
 		});
 	}
 
 	private ensureValidSlotIndex(userId: number, index: number) {
 		if (SlotsMeta.getSpecial(index)) return;
 
-		const pdata = this.players.get(userId);
 		const player = Players.GetPlayerByUserId(userId);
 		if (!player) return;
 
-		const maxSlots = GameDefinitions.getMaxSlots(player, pdata.purchasedSlots ?? 0);
-
-		if (index >= 0 && index < maxSlots) {
+		if (index >= 0 && index < GameDefinitions.getMaxSlots(player)) {
 			return;
 		}
 
@@ -173,7 +244,7 @@ export class SlotDatabase {
 		}
 
 		const external = ExternalDatabase.GetSave([userId, index]);
-		if (!external.ok) return external;
+		if (!external.ok) return { ok: false, error: external.error };
 
 		const stored = this.blocksdb.get([userId, index]);
 
@@ -186,24 +257,84 @@ export class SlotDatabase {
 		if (external.value === undefined) {
 			if (!hasStored) return { ok: true, value: undefined };
 
-			this.syncToExternal(userId, index, stored);
+			const encoded = encode(stored);
+			const synced = this.syncToExternal(userId, index, encoded);
+			this.recordSize(userId, index, encoded, synced.ok ? synced.zstd : undefined);
 			return { ok: true, value: stored };
 		}
 
-		if (!hasStored) return { ok: true, value: external.value };
+		if (!hasStored) {
+			this.recordSize(
+				userId,
+				index,
+				external.value.measured ?? encode(external.value.blocks),
+				external.value.measured !== undefined,
+			);
+			return { ok: true, value: external.value.blocks };
+		}
 
 		// Legacy blobs have no `savedAt` and count as oldest. Ties go to the datastore: it was the de-facto
 		// write target all along.
-		const externalAt = external.value.savedAt ?? 0;
+		const externalAt = external.value.blocks.savedAt ?? 0;
 		const storedAt = stored.savedAt ?? 0;
 
 		if (storedAt >= externalAt) {
 			// The local copy won, so it belongs upstairs. Push it and reclaim the room.
-			this.syncToExternal(userId, index, stored);
+			const encoded = encode(stored);
+			const synced = this.syncToExternal(userId, index, encoded);
+			this.recordSize(userId, index, encoded, synced.ok ? synced.zstd : undefined);
 			return { ok: true, value: stored };
 		}
 
-		return { ok: true, value: external.value };
+		this.recordSize(
+			userId,
+			index,
+			external.value.measured ?? encode(external.value.blocks),
+			external.value.measured !== undefined,
+		);
+		return { ok: true, value: external.value.blocks };
+	}
+
+	// fills in sizes of pre-cap slots, so re-saving a grandfathered build is not growth
+	private recordSize(
+		userId: number,
+		index: number,
+		{ characters, stored }: Measured,
+		compressed: boolean | undefined,
+	) {
+		const meta = this.getMeta(userId);
+		const slot = meta.find((s) => s.index === index);
+		// setMeta on an offline player saves and frees every slot
+		if (!slot || (slot.size === characters && slot.stored === stored && slot.compressed === compressed)) return;
+
+		this.setMeta(userId, SlotsMeta.withSlot(meta, index, { size: characters, stored, compressed }));
+	}
+
+	// no growth passes, each cap in its own unit: grandfathers pre-cap builds
+	private checkStorage(userId: number, index: number, { characters, stored }: Measured): string | undefined {
+		const meta = this.getMeta(userId);
+		const previous = meta.find((s) => s.index === index);
+
+		// `size` and `stored` are always recorded together. A slot with no `stored` was saved before sizes were
+		// recorded: its `size` is left from the 2023-2025 field of that name and matches nothing, so there is no
+		// measure to grow from, and the save goes through and records one. A slot not in the meta is new, not unknown
+		if (previous !== undefined && previous.stored === undefined) return;
+
+		if (characters > GameDefinitions.SLOT_SIZE_CAP && characters > (previous?.size ?? 0)) {
+			return `This build is ${mb(characters)} MB; a slot holds at most ${mb(GameDefinitions.SLOT_SIZE_CAP)} MB`;
+		}
+		if (!SlotsMeta.countsTowardStorage(index) || stored <= (previous?.stored ?? 0)) return;
+
+		let others = 0;
+		for (const slot of meta) {
+			if (slot.index === index || !SlotsMeta.countsTowardStorage(slot.index)) continue;
+			others += slot.stored ?? 0;
+		}
+
+		const cap = GameDefinitions.PLAYER_STORAGE_CAP + (this.players.get(userId).storage ?? 0);
+		if (others + stored <= cap) return;
+
+		return `Your saves would use ${mb(others + stored)} of ${mb(cap)} MB. Delete or shrink a slot to make room`;
 	}
 
 	/**
@@ -236,6 +367,68 @@ export class SlotDatabase {
 		$log(`Adopted ${userId}'s migrated data and dropped ${indices.size()} local slot copies`);
 	}
 
+	/** One step of the compressor: the next slot of the next player in turn. */
+	private compressNext() {
+		const userId = this.compressQueue.shift();
+		if (userId === undefined) return;
+
+		if (!this.onlinePlayers.has(userId)) {
+			this.compressTried.delete(userId);
+			return;
+		}
+		if (!this.players.isDataLoaded(userId) || !ExternalDatabase.isAvailable() || !ExternalDatabase.canCompress()) {
+			this.compressQueue.push(userId);
+			return;
+		}
+
+		const tried = this.compressTried.get(userId) ?? new Set<number>();
+		this.compressTried.set(userId, tried);
+
+		const slot = this.getMeta(userId).find(
+			(s) => s.compressed !== true && !datastoreOnlySlots.has(s.index) && !tried.has(s.index),
+		);
+		if (!slot) {
+			this.compressTried.delete(userId);
+			return;
+		}
+
+		tried.add(slot.index);
+		this.compressSlot(userId, slot.index);
+		this.compressQueue.push(userId);
+	}
+
+	private compressSlot(userId: number, index: number) {
+		const read = ExternalDatabase.GetSave([userId, index]);
+		if (!read.ok || read.value === undefined) return;
+
+		// Zstd already: a save since, or another server, wrote it
+		if (read.value.measured !== undefined) {
+			this.recordSize(userId, index, read.value.measured, true);
+			return;
+		}
+
+		const copy = ExternalDatabase.zstdCopy(read.value);
+		if (copy === undefined) return;
+		const { blob, characters } = copy;
+		const saveTime = SlotsMeta.get(this.getMeta(userId), index).saveTime;
+
+		// conditional on the row as read: a save landing first refuses this write, and the save stands
+		const json = BlocksSerializer.objectToJson(read.value.blocks);
+		const ifUnchanged = ExternalDatabase.hashOf(read.value.text);
+		const written = ExternalDatabase.SaveSlot(userId, { index, blocks: json, blob, zstdOnly: true, ifUnchanged });
+		if (!written.ok) return;
+
+		// a save that finished meanwhile recorded its own sizes, and those stand
+		if (!this.onlinePlayers.has(userId) || SlotsMeta.get(this.getMeta(userId), index).saveTime !== saveTime) return;
+		this.recordSize(userId, index, { characters, stored: buffer.len(blob) }, true);
+
+		// the client otherwise learns the new sizes at the next autosave
+		const player = Players.GetPlayerByUserId(userId);
+		if (player) CustomRemotes.updateSaves.send(player, this.getMeta(userId));
+
+		$log(`Compressed ${userId}'s slot ${index} to ${buffer.len(blob)} bytes`);
+	}
+
 	/** One tick of the outbox drain. */
 	private drainOne(): void {
 		const pending = this.pendingSync.first();
@@ -264,7 +457,7 @@ export class SlotDatabase {
 			return;
 		}
 
-		if (external.value !== undefined && (external.value.savedAt ?? 0) > (stored.savedAt ?? 0)) {
+		if (external.value !== undefined && (external.value.blocks.savedAt ?? 0) > (stored.savedAt ?? 0)) {
 			// Upstairs is newer. The queued copy is stale: drop it rather than push it.
 			this.pendingSync.delete(pending);
 			this.blocksdb.delete([userId, index]);
@@ -272,22 +465,19 @@ export class SlotDatabase {
 		}
 
 		// Leaves the entry queued on failure, so it is retried on the next tick.
-		this.syncToExternal(userId, index, stored);
+		this.syncToExternal(userId, index, encode(stored));
 	}
 
 	/**
 	 * The whole flusher: draining the outbox, backfilling a legacy slot and freeing datastore room are all
 	 * "the local copy is newer, so it belongs upstairs". Only dropped once the backend confirms.
 	 */
-	private syncToExternal(userId: number, index: number, blocks: LatestSerializedBlocks): boolean {
-		const result = ExternalDatabase.SaveSlot(userId, {
-			index,
-			blocks: BlocksSerializer.objectToJson(blocks),
-		});
+	private syncToExternal(userId: number, index: number, { json, blob }: Encoded): ExternalWrite {
+		const result = ExternalDatabase.SaveSlot(userId, { index, blocks: json, blob });
 
 		if (!result.ok) {
 			$warn(`Could not sync ${userId}'s slot ${index} upstream: ${result.error}`);
-			return false;
+			return result;
 		}
 
 		// Confirmed upstairs, so the datastore copy is dead weight — and that store is the one running out.
@@ -295,14 +485,24 @@ export class SlotDatabase {
 		this.pendingSync.delete(`${userId}_${index}`);
 
 		$log(`Synced ${userId}'s slot ${index} upstream and reclaimed the datastore copy`);
-		return true;
+		return result;
 	}
-	private stampMeta(userId: number, index: number, blocks: LatestSerializedBlocks) {
+	private stampMeta(
+		userId: number,
+		index: number,
+		blocks: LatestSerializedBlocks,
+		measured?: Measured,
+		compressed?: boolean,
+	) {
 		const meta = [...this.getMeta(userId)];
+		const slot = SlotsMeta.get(meta, index);
 		SlotsMeta.set(meta, {
-			...SlotsMeta.get(meta, index),
+			...slot,
 			blocks: blocks.blocks.size(),
 			saveTime: DateTime.now().UnixTimestampMillis,
+			size: measured?.characters ?? slot.size,
+			stored: measured?.stored ?? slot.stored,
+			compressed,
 			index,
 		});
 		this.setMeta(userId, meta);
@@ -336,10 +536,11 @@ export class SlotDatabase {
 			return { ok: true, durable: "datastore" };
 		}
 
-		const external = ExternalDatabase.SaveSlot(userId, {
-			index,
-			blocks: BlocksSerializer.objectToJson(blocks),
-		});
+		const encoded = encode(blocks);
+		const refused = this.checkStorage(userId, index, encoded);
+		if (refused !== undefined) return { ok: false, error: refused };
+
+		const external = ExternalDatabase.SaveSlot(userId, { index, blocks: encoded.json, blob: encoded.blob });
 
 		if (external.ok) {
 			// A local copy left behind is not just dead weight: queued, the drain would push it back over this
@@ -347,7 +548,7 @@ export class SlotDatabase {
 			this.pendingSync.delete(`${userId}_${index}`);
 			this.blocksdb.delete([userId, index]);
 
-			this.stampMeta(userId, index, blocks);
+			this.stampMeta(userId, index, blocks, encoded, external.zstd);
 			return { ok: true, durable: "external" };
 		}
 
@@ -355,14 +556,14 @@ export class SlotDatabase {
 		this.pendingSync.add(`${userId}_${index}`);
 
 		if (!this.blocksdb.setAndSave([userId, index], blocks)) {
-			// Neither store took it: an oversized build blows the 4MB key limit. This used to vanish silently.
+			// Neither store took it: an oversized build blows the 4MB key limit.
 			return {
 				ok: false,
 				error: "The database is unavailable, and this build is too large to queue locally",
 			};
 		}
 
-		this.stampMeta(userId, index, blocks);
+		this.stampMeta(userId, index, blocks, encoded);
 		return { ok: true, durable: "datastore" };
 	}
 	/** Only ever quit/autosave <- lastRun. The source reads from the datastore; the target is a real slot,
@@ -382,7 +583,14 @@ export class SlotDatabase {
 		if (!written.ok) return written;
 
 		const meta = [...this.getMeta(userId)];
-		SlotsMeta.set(meta, { ...SlotsMeta.get(meta, indexfrom), ...(SlotsMeta.getSpecialNoTest(index) ?? {}), index });
+		SlotsMeta.set(meta, {
+			...SlotsMeta.get(meta, indexfrom),
+			...(SlotsMeta.getSpecialNoTest(index) ?? {}),
+			size: SlotsMeta.get(meta, index).size,
+			stored: SlotsMeta.get(meta, index).stored,
+			compressed: SlotsMeta.get(meta, index).compressed,
+			index,
+		});
 		this.setMeta(userId, meta);
 
 		return written;
@@ -419,10 +627,8 @@ export class SlotDatabase {
 			savedAt: DateTime.now().UnixTimestampMillis,
 		};
 
-		const external = ExternalDatabase.SaveSlot(userId, {
-			index,
-			blocks: BlocksSerializer.objectToJson(tombstone),
-		});
+		const { json, blob } = encode(tombstone);
+		const external = ExternalDatabase.SaveSlot(userId, { index, blocks: json, blob });
 
 		if (external.ok) {
 			this.blocksdb.delete([userId, index]);

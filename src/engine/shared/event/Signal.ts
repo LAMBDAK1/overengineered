@@ -47,26 +47,52 @@ export class ArgsSignal<TArgs extends unknown[] = []> implements ReadonlyArgsSig
 	}
 
 	private destroyed = false;
-	private subscribed?: defined[]; // defined instead of T to workaround the type system
+	private subscribed?: { readonly callback: defined; dead?: boolean }[]; // defined instead of T to workaround the type system
 	private readonly inSelf = new Map<thread, number>();
 	private errorHandler?: (err: unknown) => unknown;
 	private firingSub?: defined;
+	private firing = 0;
+	private hasDead = false;
 
 	Connect(callback: (...args: TArgs) => void): SignalConnection {
 		if (this.destroyed) return { Disconnect() {} };
 
 		this.subscribed ??= [];
-		this.subscribed.push(callback);
+		const entry: { readonly callback: defined; dead?: boolean } = { callback };
+		this.subscribed.push(entry);
 
 		const arr = this.subscribed;
+		const signal = this;
 		return {
 			Disconnect() {
-				arr.remove(arr.indexOf(callback));
+				if (entry.dead) return;
+				entry.dead = true;
+
+				if (signal.firing > 0) {
+					signal.hasDead = true;
+					return;
+				}
+
+				const index = arr.indexOf(entry);
+				if (index !== -1) arr.remove(index);
 			},
 		};
 	}
+	private finishFiring(subs: { readonly callback: defined; dead?: boolean }[]) {
+		this.firing--;
+		if (this.firing > 0 || !this.hasDead) return;
+
+		this.hasDead = false;
+		let kept = 0;
+		for (let i = 0; i < subs.size(); i++) {
+			const sub = subs[i];
+			if (sub.dead) continue;
+			subs[kept++] = sub;
+		}
+		while (subs.size() > kept) subs.pop();
+	}
 	Fire(...args: TArgs): void {
-		if (!this.subscribed) return;
+		if (!this.subscribed || this.subscribed.size() === 0) return;
 
 		const thread = coroutine.running();
 		const inSelf = this.inSelf.get(thread) ?? 0;
@@ -88,18 +114,27 @@ export class ArgsSignal<TArgs extends unknown[] = []> implements ReadonlyArgsSig
 			return err;
 		};
 
-		for (const sub of this.subscribed) {
-			this.firingSub = sub;
-			const [success, result] = xpcall(sub as (...args: TArgs) => void, this.errorHandler, ...args);
+		const subs = this.subscribed;
+		this.firing++;
+		const count = subs.size();
+		let i = 0;
+		while (i < count) {
+			const sub = subs[i++];
+			if (sub.dead) continue;
+
+			this.firingSub = sub.callback;
+			const [success, result] = xpcall(sub.callback as (...args: TArgs) => void, this.errorHandler, ...args);
 
 			if (!success) {
 				this.inSelf.delete(thread);
+				this.finishFiring(subs);
 				error(result, 2);
 			}
 		}
 
 		this.firingSub = undefined;
 		this.inSelf.delete(thread);
+		this.finishFiring(subs);
 	}
 
 	destroy() {

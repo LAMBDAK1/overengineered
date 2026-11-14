@@ -5,6 +5,7 @@ import { InstanceBlockLogic } from "shared/blockLogic/BlockLogic";
 import { BlockSynchronizer } from "shared/blockLogic/BlockSynchronizer";
 import { SoundLogic } from "shared/blockLogic/SoundLogic";
 import { BlockCreation } from "shared/blocks/BlockCreation";
+import { PublicEffects } from "shared/blocks/PublicEffects";
 import type { BlockLogicFullBothDefinitions, InstanceBlockLogicArgs } from "shared/blockLogic/BlockLogic";
 import type { BlockLogicTypes } from "shared/blockLogic/BlockLogicTypes";
 import type { BlockBuilder } from "shared/blocks/Block";
@@ -179,6 +180,15 @@ const getSound = (block: BlockModel): Sound => {
 	return created;
 };
 
+PublicEffects.register("publicSpeakers", (shouldStop) => {
+	for (const [block, sound] of sounds) {
+		if (!shouldStop(block)) continue;
+
+		sound.Looped = false;
+		sound.Stop();
+	}
+});
+
 const update = ({ block, play, sound, loop, progress, volume }: UpdateType) => {
 	if (!block) return;
 	const instance = getSound(block);
@@ -279,7 +289,7 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 		// Local by design (see the input's tooltip): only this player hears the flat mix, everyone else keeps
 		// the sound positioned at the block, so it is applied here rather than travelling in the payload.
 		if (RunService.IsClient()) {
-			this.onk(["screenspace"], ({ screenspace }) => {
+			this.onkFirstInputs(["screenspace"], ({ screenspace }) => {
 				const parent = screenspace ? SoundService : this.instance.PrimaryPart;
 				if (soundInstance.Parent === parent) return;
 
@@ -304,6 +314,7 @@ class Logic extends InstanceBlockLogic<typeof definition> {
 export const SpeakerBlock = {
 	...BlockCreation.defaults,
 	id: "speaker",
+	logicPriority: BlockCreation.priority.Output,
 	displayName: "Speaker",
 	description: "Definitely speaks something",
 	limit: 50,

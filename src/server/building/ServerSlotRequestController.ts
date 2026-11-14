@@ -1,4 +1,6 @@
 import { Component } from "engine/shared/component/Component";
+import { PlayerRank } from "engine/shared/PlayerRank";
+import { t } from "engine/shared/t";
 import { ExternalDatabase } from "server/database/ExternalDatabase";
 import { BlockConfigStore } from "shared/building/BlockConfigStore";
 import { BlocksSerializer } from "shared/building/BlocksSerializer";
@@ -10,6 +12,9 @@ import type { PlayerId } from "server/PlayerId";
 import type { LatestSerializedBlocks } from "shared/building/BlocksSerializer";
 import type { BuildingPlot } from "shared/building/BuildingPlot";
 import type { PlayerDataStorageRemotesSlots } from "shared/remotes/PlayerDataRemotes";
+
+const adminOverwrites = (player: Player, index: number) =>
+	SlotsMeta.isAdminOverwritable(index) && (PlayerRank.isDev(player) || PlayerRank.isMod(player));
 
 export interface SlotHistoryLoader {
 	readonly loadSlotHistory: (
@@ -47,7 +52,7 @@ export class ServerSlotRequestController extends Component {
 
 		slotRemotes.load.subscribe((p, arg) => this.loadSlot(arg));
 		slotRemotes.save.subscribe((p, arg) => this.saveSlot(p, arg));
-		slotRemotes.delete.subscribe((p, arg) => this.deleteSlot(arg));
+		slotRemotes.delete.subscribe((p, arg) => this.deleteSlot(p, arg));
 		slotRemotes.databaseStatus.subscribe(() => ({
 			success: true,
 			available: ExternalDatabase.isAvailable(),
@@ -56,7 +61,10 @@ export class ServerSlotRequestController extends Component {
 	}
 
 	private saveSlot(player: Player, request: PlayerSaveSlotRequest): SaveSlotResponse {
-		if (SlotsMeta.isReadonly(request.index)) {
+		if (request.locked !== undefined && !t.typeCheck(request.locked, t.boolean)) {
+			return { success: false, message: "Invalid lock state" };
+		}
+		if (SlotsMeta.isReadonly(request.index) && !adminOverwrites(player, request.index)) {
 			throw `Slot is readonly while saving ${this.playerId} ${request.index}`;
 		}
 
@@ -65,6 +73,9 @@ export class ServerSlotRequestController extends Component {
 		let output: ResponseResult<SaveSlotResponse> | undefined;
 		let externalError: string | undefined;
 		const currentMeta = this.players.get(this.playerId).slots ?? [];
+		if (request.save && SlotsMeta.get(currentMeta, request.index).locked) {
+			return { success: false, message: "This slot is locked" };
+		}
 
 		// AWAITED, so a failure is reported instead of papered over with an optimistic `{ success: true }`.
 		if (!request.save && !currentMeta.any((c) => c.index === request.index)) {
@@ -94,17 +105,20 @@ export class ServerSlotRequestController extends Component {
 				color: request.color ?? get.color,
 				touchControls: request.touchControls ?? get.touchControls,
 				order: request.order ?? get.order,
+				locked: request.locked ?? get.locked,
 			});
 		});
 
 		return {
 			success: true,
 			blocks: output?.blocks,
+			stored: SlotsMeta.get(this.players.get(this.playerId).slots ?? [], request.index).stored,
 			externalError,
 		};
 	}
-	private deleteSlot(request: PlayerDeleteSlotRequest): Response {
-		if (SlotsMeta.isReadonly(request.index) && !SlotsMeta.isTestSlot(request.index)) {
+	private deleteSlot(player: Player, request: PlayerDeleteSlotRequest): Response {
+		const deletable = SlotsMeta.isTestSlot(request.index) || adminOverwrites(player, request.index);
+		if (SlotsMeta.isReadonly(request.index) && !deletable) {
 			throw `Slot is readonly while deleting ${this.playerId} ${request.index}`;
 		}
 
@@ -122,9 +136,9 @@ export class ServerSlotRequestController extends Component {
 	private forceLoadSlot(userid: number, index: number): LoadSlotResponse {
 		const start = os.clock();
 
-		// Validate BEFORE touching the plot: the old order wiped first, so an unreadable slot annihilated the
-		// player's live build, and there is no undo. pcall'd because the datastore read can throw, and a throw
-		// out of a remote handler reaches the player as nothing at all.
+		// Validate BEFORE touching the plot: wiping first would let an unreadable slot destroy the live build, with
+		// no undo. pcall'd because the datastore read can throw, and a throw out of a remote handler reaches the
+		// player as nothing at all.
 		const [ok, result] = pcall(() => this.slots.resolveBlocks(userid, index));
 		if (!ok) {
 			return { success: false, message: `Could not read the slot: ${result}` };

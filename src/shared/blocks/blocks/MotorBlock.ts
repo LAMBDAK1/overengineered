@@ -162,36 +162,42 @@ const events = {
 
 export type { Logic as MotorBlockLogic };
 export class Logic extends InstanceBlockLogic<typeof definition, MotorBlock> {
-	private readonly hingeConstraint;
-	private readonly rotationWeld;
-
 	constructor(block: InstanceBlockLogicArgs) {
 		super(definition, block);
 
-		this.hingeConstraint = this.instance.Base.HingeConstraint;
-		this.rotationWeld = this.instance.Base.Weld;
+		const hingeConstraint = this.instance.Base.HingeConstraint;
+		const rotationWeld = this.instance.Base.Weld;
 
 		const blockScale = BlockManager.manager.scale.get(this.instance) ?? Vector3.one;
 		const scale = blockScale.X * blockScale.Y * blockScale.Z;
 
+		let infiniteTorque: boolean;
+		this.onkFirstInputs(["cframe"], ({ cframe }) => {
+			infiniteTorque = cframe;
+			if (!cframe) return;
+			events.cframe_update.send({
+				rotationSpeed: 0,
+				currentCFrame: rotationWeld.C0,
+				block: this.instance,
+			} as CFrameUpdateData);
+		});
+
 		this.onk(["rotationSpeed"], ({ rotationSpeed }) => {
-			if (this.rotationWeld.Enabled) {
+			if (rotationWeld.Enabled) {
 				events.cframe_update.send({
 					rotationSpeed,
-					currentCFrame: this.rotationWeld.C0,
+					currentCFrame: rotationWeld.C0,
 					block: this.instance,
 				} as CFrameUpdateData);
 			} else {
-				this.hingeConstraint.AngularVelocity = rotationSpeed;
+				hingeConstraint.AngularVelocity = rotationSpeed;
 			}
 		});
 
 		this.onk(["max_torque"], ({ max_torque }) => {
-			if (this.rotationWeld.Enabled) return;
-			this.hingeConstraint.MotorMaxTorque = max_torque * 1_000_000 * math.max(1, scale);
+			if (rotationWeld.Enabled) return;
+			hingeConstraint.MotorMaxTorque = max_torque * 1_000_000 * math.max(1, scale);
 		});
-
-		let infiniteTorque: boolean;
 
 		// the weld carries the commanded rotation outright, so read it back; the hinge is physics-driven
 		// and can stall or lag, so it has to be measured
@@ -199,8 +205,8 @@ export class Logic extends InstanceBlockLogic<typeof definition, MotorBlock> {
 			this.output.result.set(
 				"number",
 				infiniteTorque === true
-					? -this.rotationWeld.C0.ToEulerAnglesXYZ()[0]
-					: math.rad(this.hingeConstraint.CurrentAngle),
+					? -rotationWeld.C0.ToEulerAnglesXYZ()[0]
+					: math.rad(hingeConstraint.CurrentAngle),
 			);
 		});
 
@@ -221,30 +227,20 @@ export class Logic extends InstanceBlockLogic<typeof definition, MotorBlock> {
 			}
 		});
 
-		this.onkFirstInputs(["cframe"], ({ cframe }) => {
-			infiniteTorque = cframe;
-			if (!cframe) return;
-			events.cframe_update.send({
-				rotationSpeed: 0,
-				currentCFrame: this.rotationWeld.C0,
-				block: this.instance,
-			} as CFrameUpdateData);
-		});
-
 		this.onk(["clutch_release"], ({ clutch_release }) => {
-			if (this.rotationWeld.Enabled && clutch_release) {
+			if (rotationWeld.Enabled && clutch_release) {
 				this.disableAndBurn();
 			}
 
-			this.hingeConstraint.ActuatorType = Enum.ActuatorType[clutch_release ? "None" : "Motor"];
+			hingeConstraint.ActuatorType = Enum.ActuatorType[clutch_release ? "None" : "Motor"];
 		});
 
 		this.onDisable(() => {
 			// a burned motor keeps its weld in the world, so the world-departure check above never fires for it
-			stopCFrameUpdates(this.rotationWeld);
+			stopCFrameUpdates(rotationWeld);
 
 			if (this.instance.FindFirstChild("Base")?.FindFirstChild("HingeConstraint")) {
-				this.hingeConstraint.AngularVelocity = 0;
+				hingeConstraint.AngularVelocity = 0;
 			}
 		});
 	}

@@ -7,6 +7,9 @@ import { ProjectileHitboxes } from "shared/weaponProjectiles/ProjectileHitboxes"
 import type { PlayerDataStorage } from "client/PlayerDataStorage";
 import type { BlockDamage } from "engine/shared/BlockDamageController";
 
+/** Muzzle speed cap for every projectile, studs/s. The server bounds a shell's claimed impact by the same number. */
+export const MAX_PROJECTILE_SPEED = 3000;
+
 export type ModifierValue = {
 	isRelative?: boolean;
 	value: number;
@@ -65,6 +68,50 @@ ProjectileHitboxes.changed.Connect(refreshProjectileFilter);
 ProjectileHitboxes.initialize();
 
 export type DamageType = "KINETIC" | "EXPLOSIVE" | "ENERGY";
+
+/**
+ * Live projectiles in the order they started, stepped by one shared connection instead of one each. Each step is
+ * pcall'd so one failing projectile does not stop the rest, as separate connections would not; one spawned during
+ * a step waits for the next frame, as a connection made mid-fire would.
+ */
+const stepping: WeaponProjectile[] = [];
+let stepConnection: RBXScriptConnection | undefined;
+
+const stepAll = (dt: number) => {
+	const count = stepping.size();
+	for (let i = 0; i < count; i++) {
+		const projectile = stepping[i];
+		if (!projectile.stepping) continue;
+
+		const [ok, err] = pcall(stepProjectile, projectile, dt);
+		if (!ok) task.spawn(error, err, 0);
+	}
+
+	let kept = 0;
+	for (let i = 0; i < stepping.size(); i++) {
+		const projectile = stepping[i];
+		if (!projectile.stepping) {
+			projectile.listed = false;
+			continue;
+		}
+		stepping[kept++] = projectile;
+	}
+	for (let i = stepping.size() - 1; i >= kept; i--) stepping.remove(i);
+
+	if (kept !== 0) return;
+	stepConnection?.Disconnect();
+	stepConnection = undefined;
+};
+const stepProjectile = (projectile: WeaponProjectile, dt: number) => projectile.step(dt);
+
+const startStepping = (projectile: WeaponProjectile) => {
+	projectile.stepping = true;
+	if (projectile.listed) return;
+
+	projectile.listed = true;
+	stepping.push(projectile);
+	stepConnection ??= RunService.PostSimulation.Connect(stepAll);
+};
 
 export class WeaponProjectile extends InstanceComponent<BasePart> {
 	static playerData?: PlayerDataStorage;
@@ -144,17 +191,9 @@ export class WeaponProjectile extends InstanceComponent<BasePart> {
 		this.event.subscribe(this.projectilePart.Touched, (part) => {
 			this.tryHit(part, this.projectilePart?.Position ?? part.Position);
 		});
-		this.event.subscribe(RunService.PostSimulation, (dt) => {
-			if (this.continuousCollision) {
-				this.sweepCollision();
-				if (this.isDestroyed()) return;
-			}
-
-			const percentage = this.modifiedLifetime === undefined ? 0 : this.currentLifetime / this.modifiedLifetime;
-			const reversePercentage = 1 - percentage;
-			if (percentage >= 1) return this.destroy();
-			this.onTick(dt, percentage, reversePercentage);
-		});
+		this.onEnable(() => startStepping(this));
+		this.onDisable(() => (this.stepping = false));
+		this.onDestroy(() => (this.stepping = false));
 
 		this.onDestroy(() => pmodel.Destroy());
 
@@ -162,9 +201,29 @@ export class WeaponProjectile extends InstanceComponent<BasePart> {
 		recalculateEffects(this);
 
 		// Modifier-scaled firing speed along the aim direction, plus the platform's own velocity (full inheritance).
-		const speedMag = applyModifiers(baseVelocity.Magnitude, this.allModifiers(), "speedModifier");
+		const speedMag = math.min(
+			applyModifiers(baseVelocity.Magnitude, this.allModifiers(), "speedModifier"),
+			MAX_PROJECTILE_SPEED,
+		);
 		const fired = baseVelocity.Magnitude > 0 ? baseVelocity.Unit.mul(speedMag) : Vector3.zero;
 		newModel.AssemblyLinearVelocity = fired.add(platformVelocity);
+	}
+
+	/** Whether the shared driver should step this projectile; cleared on disable and destroy */
+	stepping = false;
+	/** Whether this projectile is in the shared driver's list, which drops it on the next pass once not stepping */
+	listed = false;
+
+	step(dt: number) {
+		if (this.continuousCollision) {
+			this.sweepCollision();
+			if (this.isDestroyed()) return;
+		}
+
+		const percentage = this.modifiedLifetime === undefined ? 0 : this.currentLifetime / this.modifiedLifetime;
+		const reversePercentage = 1 - percentage;
+		if (percentage >= 1) return this.destroy();
+		this.onTick(dt, percentage, reversePercentage);
 	}
 
 	/**
@@ -263,10 +322,8 @@ function applyDamageToPart(
 	const controller = BlockDamageController.instance;
 	if (!controller) return;
 
-	// Mirrors the server's targetForPart: a block part resolves to its model, anything else stands for itself
-	// — how a registered character limb reaches its own Damageable. Taking part.Parent instead handed over the
-	// whole character, and the server, finding no Damageable, improvised one block covering the entire body;
-	// breaking that took every limb at once and skipped limb HP.
+	// mirrors the server's targetForPart: anything not in a block stands for itself, so a character limb reaches its
+	// own Damageable rather than the whole character
 	const target = BlockManager.tryGetBlockModelByPart(part) ?? part;
 
 	controller.applyDamage(target, {

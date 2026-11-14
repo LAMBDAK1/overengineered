@@ -3,6 +3,7 @@ import { t } from "engine/shared/t";
 import { InstanceBlockLogic } from "shared/blockLogic/BlockLogic";
 import { BlockSynchronizer } from "shared/blockLogic/BlockSynchronizer";
 import { BlockCreation } from "shared/blocks/BlockCreation";
+import { PublicEffects } from "shared/blocks/PublicEffects";
 import { TagUtils } from "shared/utils/TagUtils";
 import type { PlayerDataStorage } from "client/PlayerDataStorage";
 import type { BlockLogicFullBothDefinitions, InstanceBlockLogicArgs } from "shared/blockLogic/BlockLogic";
@@ -225,8 +226,8 @@ const MAX_REPLICATED_POINTS = MAX_BEAM_COUNT + 2;
 
 const pointList = t.array(t.vector3);
 const updateDataType = t.interface({
-	// The children are checked, not asserted: `.as<LaserModel>()` is compile-time only, so any Model used to
-	// pass here and then throw inside LaserBeams reaching for a Ray and Dot it never had.
+	// The children are checked, not asserted: `.as<LaserModel>()` is compile-time only, so any Model would pass
+	// and LaserBeams would throw reaching for its Ray and Dot.
 	block: t
 		.instanceTree("Model", { Ray: t.instance("BasePart"), Dot: t.instance("BasePart") })
 		.nominal("blockModel")
@@ -248,6 +249,14 @@ type UpdateData = t.Infer<typeof updateDataType>;
 /** Lasers this client owns. Their own logic draws every frame, so a replicated payload must not fight it. */
 const locallyDriven = new Set<LaserModel>();
 const spectated = new Map<LaserModel, LaserBeams>();
+PublicEffects.register("publicLasers", (shouldStop) => {
+	for (const [block, beams] of spectated) {
+		if (!shouldStop(block)) continue;
+
+		beams.destroy();
+		spectated.delete(block);
+	}
+});
 // One payload is handled at a time, so the expansion buffers are shared rather than per block.
 const scratchOrigins: Vector3[] = [];
 const scratchEnds: Vector3[] = [];
@@ -427,7 +436,7 @@ class Logic extends InstanceBlockLogic<typeof definition, LaserModel> {
 			beams.setRayColor(rayColor);
 			pendingSend = true;
 		});
-		this.onk(["dotColor"], ({ dotColor }) => {
+		this.onkFirstInputs(["dotColor"], ({ dotColor }) => {
 			lastDotColor = dotColor;
 			beams.setDotColor(dotColor);
 			pendingSend = true;

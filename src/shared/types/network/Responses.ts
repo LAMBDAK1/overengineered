@@ -12,6 +12,10 @@ declare global {
 		readonly index: number;
 		readonly order: number | undefined;
 		readonly saveTime: number | undefined;
+		readonly size?: number; // char size
+		readonly stored?: number; // zstd bytes
+		readonly compressed?: boolean; // the backend holds it as zstd; unset when not known
+		readonly locked?: boolean;
 	};
 
 	type LoadSlotResponse = Response<{
@@ -34,22 +38,18 @@ declare global {
 		readonly history: SlotHistory;
 	}>;
 
-	type FetchSlotsResponse = Response<{
-		readonly purchasedSlots: number;
-		readonly slots: readonly SlotMeta[];
-	}>;
-
 	type PlayerDataResponse = {
-		readonly purchasedSlots: number | undefined;
 		readonly settings: Partial<PlayerConfig> | undefined;
 		readonly slots: readonly SlotMeta[] | undefined;
 		readonly data: OePlayerData | undefined;
 		readonly blocks: PlayerBlockLimits | undefined;
 		readonly achievements: { readonly [k in string]: AchievementData } | undefined;
+		readonly storage?: number;
 	};
 
 	type SaveSlotResponse = Response<{
 		readonly blocks: number | undefined;
+		readonly stored?: number;
 		readonly externalError?: string;
 	}>;
 }

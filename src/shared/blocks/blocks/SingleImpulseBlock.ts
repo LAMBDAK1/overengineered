@@ -5,6 +5,7 @@ import type { BlockLogicArgs, BlockLogicFullBothDefinitions } from "shared/block
 import type { BlockBuilder } from "shared/blocks/Block";
 
 const definition = {
+	stateful: true,
 	input: {
 		impulse: {
 			displayName: "Impulse",
@@ -47,12 +48,16 @@ class Logic extends BlockLogic<typeof definition> {
 		let wasImpulsedLastTick = false;
 		this.onTicc(() => {
 			if (!wasImpulsedLastTick) return;
+			wasImpulsedLastTick = false;
 			this.output.value.set("bool", false);
 		});
 		this.output.value.set("bool", false);
 
-		this.on(({ impulse, type: trig_side, impulseChanged }) => {
-			if (!impulseChanged) return;
+		let last: boolean | undefined;
+		this.on(({ impulse, type: trig_side }) => {
+			const prev = last;
+			last = impulse;
+			if (prev === undefined || prev === impulse) return;
 
 			if (trig_side === "both" || (impulse && trig_side === "rtrig") || (!impulse && trig_side === "ftrig")) {
 				wasImpulsedLastTick = true;
